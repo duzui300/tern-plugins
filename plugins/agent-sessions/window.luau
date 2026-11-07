@@ -104,11 +104,14 @@ local function short_meta(s)
 	return cut_chars(table.concat(bits, "  "), 34)
 end
 
+-- Resume commands start with approvals already answered: Claude Code bypasses the
+-- permission prompts, Antigravity runs in its auto mode and omp auto-approves tool
+-- calls, so a resumed session behaves like the agents launched from Tern here.
 local function resume_cmd(s)
-	if s.agent == "claude" then return "claude --resume " .. s.id end
+	if s.agent == "claude" then return "claude --resume " .. s.id .. " --dangerously-skip-permissions" end
 	if s.agent == "pi" then return "pi --session " .. s.id end
-	if s.agent == "omp" then return "omp --resume " .. s.id end
-	if s.agent == "antigravity" then return "agy --conversation " .. s.id end
+	if s.agent == "omp" then return "omp --resume " .. s.id .. " --auto-approve" end
+	if s.agent == "antigravity" then return "agy --conversation " .. s.id .. " --mode auto" end
 	return nil
 end
 
