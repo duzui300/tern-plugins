@@ -15,7 +15,7 @@ Claude Code, Antigravity, Pi and omp each keep conversations in their own format
 - Four adapters: Claude Code, Antigravity (IDE and CLI), Pi and omp.
 - Group by agent, folder or tag; filter by folder or tag; search titles, paths and tags.
 - Collapsible groups, collapsed by default, with expand-all/collapse-all.
-- Resume in a new Tern tab with the agent's own command, or copy the command; Claude Code resumes with `--dangerously-skip-permissions`, Antigravity with `--mode auto` and omp with `--auto-approve`, so a resumed session does not stop at permission prompts.
+- Resume in a new Tern tab with the agent's own command, or copy the command; Claude Code and Antigravity resume with `--dangerously-skip-permissions` and omp with `--approval-mode=yolo`, so a resumed session does not stop at permission prompts.
 - Aliases and tags live in the plugin's own SQLite database. Session files are never written.
 - Hide noisy sessions, or delete a session from disk behind a two-step confirmation.
 - Responsive layout: rows wrap and the action column stays aligned when the pane narrows.
@@ -25,9 +25,9 @@ Claude Code, Antigravity, Pi and omp each keep conversations in their own format
 | Agent | Session files | Resume command |
 | --- | --- | --- |
 | Claude Code | `~/.claude/projects/<project>/<id>.jsonl` | `claude --resume <id> --dangerously-skip-permissions` |
-| Antigravity | `~/.gemini/antigravity{,-cli}/conversation_summaries.db`, plus `brain/<id>/.system_generated/logs/transcript_full.jsonl` (IDE transcripts are chunked under `chunks/transcript_full/`) | `agy --conversation <id> --mode auto` |
+| Antigravity | `~/.gemini/antigravity{,-cli}/conversation_summaries.db`, plus `brain/<id>/.system_generated/logs/transcript_full.jsonl` (IDE transcripts are chunked under `chunks/transcript_full/`) | `agy --conversation <id> --dangerously-skip-permissions` |
 | Pi | `~/.pi/agent/sessions/<project>/<time>_<id>.jsonl` | `pi --session <id>` |
-| omp | `~/.omp/agent/sessions/<project>/<time>_<id>.jsonl` | `omp --resume <id> --auto-approve` |
+| omp | `~/.omp/agent/sessions/<project>/<time>_<id>.jsonl` | `omp --resume <id> --approval-mode=yolo` |
 
 The plugin never writes to these files. Antigravity data is opened read-only through `node:sqlite`.
 
