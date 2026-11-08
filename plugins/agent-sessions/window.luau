@@ -213,9 +213,12 @@ end
 
 local function session_actions(s)
 	local acts = {}
-	if resume_cmd(s) then
+	local cmd = resume_cmd(s)
+	if cmd then
 		acts[#acts + 1] = action_button("play", "Resume this session", "resume:" .. key_of(s))
 		acts[#acts + 1] = action_button("copy", "Copy the resume command", "copy:" .. key_of(s))
+	elseif s.agent == "carly" then
+		acts[#acts + 1] = action_button("copy", "Copy the transcript path", "copy:" .. key_of(s))
 	end
 	acts[#acts + 1] = action_button("pen", "Rename", "rename:" .. key_of(s))
 	acts[#acts + 1] = action_button("tag", "Edit tags", "tag:" .. key_of(s))
@@ -318,9 +321,12 @@ local function build_detail()
 		ui.badge(s.agent),
 	})
 	local buttons = {}
-	if resume_cmd(s) then
+	local cmd = resume_cmd(s)
+	if cmd then
 		buttons[#buttons + 1] = ui.button("Resume", { size = "sm", variant = "primary", actions = { click = "resume:" .. key_of(s) } })
 		buttons[#buttons + 1] = ui.button("Copy", { size = "sm", variant = "quiet", actions = { click = "copy:" .. key_of(s) } })
+	elseif s.agent == "carly" then
+		buttons[#buttons + 1] = ui.button("Copy path", { size = "sm", variant = "quiet", actions = { click = "copy:" .. key_of(s) } })
 	end
 	buttons[#buttons + 1] = ui.button("Rename", { size = "sm", variant = "quiet", actions = { click = "rename:" .. key_of(s) } })
 	buttons[#buttons + 1] = ui.button("Tags", { size = "sm", variant = "quiet", actions = { click = "tag:" .. key_of(s) } })
@@ -338,7 +344,7 @@ local function build_detail()
 	end
 	local kids = { head, ui.rule(), actions }
 	if s.agent == "carly" then
-		kids[#kids + 1] = ui.text({ ui.span("Carly transcripts are read-only here: search, tag or delete them; they can't be resumed.", "muted") })
+		kids[#kids + 1] = ui.text({ ui.span("Carly transcripts can't be resumed here. Copy path puts the JSONL file on the clipboard so another agent can pick the conversation up.", "muted") })
 	end
 	kids[#kids + 1] = meta
 	kids[#kids + 1] = ui.rule()
@@ -476,7 +482,13 @@ end
 
 local function copy_payload(cx, s)
 	local cmd = resume_cmd(s)
-	if not cmd then return end
+	if not cmd then
+		if s.path and s.path ~= "" then
+			cx:copy(s.path)
+			cx:toast("info", "Copied transcript path", s.path)
+		end
+		return
+	end
 	local cwd = s.cwd or ""
 	local shell = tostring(cx.settings:get("shell") or ""):lower()
 	local cd = ""

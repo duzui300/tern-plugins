@@ -16,7 +16,7 @@ Claude Code, Antigravity, Pi, omp and Carly each keep conversations in their own
 - Group by agent, folder or tag; filter by folder or tag; search titles, paths and tags.
 - Collapsible groups, collapsed by default, with expand-all/collapse-all.
 - Resume in a new Tern tab with the agent's own command, or copy the command; Claude Code and Antigravity resume with `--dangerously-skip-permissions` and omp with `--approval-mode=yolo`, so a resumed session does not stop at permission prompts.
-- Carly transcripts are read-only here: search, rename, tag, read and delete them, but they have no resume command.
+- Carly transcripts are read-only here: search, rename, tag, read and delete them; Copy puts the JSONL path on the clipboard so another agent can continue the conversation.
 - Aliases and tags live in the plugin's own SQLite database. Session files are never written.
 - Hide noisy sessions, or delete a session from disk behind a two-step confirmation.
 - Responsive layout: rows wrap and the action column stays aligned when the pane narrows.
@@ -54,8 +54,8 @@ Run **Agent sessions** from the palette (`plugin.agent-sessions.open`).
 
 - **Toolbar**: filter by folder or tag, search, switch grouping (agent, folder, tag), expand/collapse all, show hidden sessions, rescan.
 - **Groups**: collapsed by default. Click a group header to expand or collapse it; the badge counts its sessions.
-- **Rows**: click a title to read the transcript. The icon buttons resume, copy the resume command, rename, edit tags, or hide/delete; Carly rows drop the first two.
-- **Detail**: Back, Resume, Copy, Rename, Tags; the transcript renders as Markdown. Carly transcripts show a read-only note instead of Resume/Copy.
+- **Rows**: click a title to read the transcript. The icon buttons resume, copy the resume command, rename, edit tags, or hide/delete; Carly rows drop Resume, and their Copy button copies the transcript path instead of a command.
+- **Detail**: Back, Resume, Copy, Rename, Tags; the transcript renders as Markdown. Carly transcripts show a read-only note and a Copy path button.
 
 ### Aliases and tags
 
