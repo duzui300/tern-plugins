@@ -1,4 +1,4 @@
--- Agent Sessions: browse Claude Code / Antigravity / Pi history.
+-- Agent Sessions: browse Claude Code / Antigravity / Pi / omp / Carly history.
 -- Aliases and tags live in this plugin's own SQLite; session files are never written.
 
 local ui = tern.ui
@@ -19,7 +19,7 @@ local S = {
 	scanning = false,
 }
 
-local AGENT_ORDER = { claude = 1, antigravity = 2, omp = 3, pi = 4 }
+local AGENT_ORDER = { claude = 1, antigravity = 2, omp = 3, pi = 4, carly = 5 }
 
 local function trim(s)
 	return (s or ""):match("^%s*(.-)%s*$")
@@ -38,6 +38,7 @@ local function agent_icon(a)
 	if a == "pi" then return "pi-mark" end
 	if a == "omp" then return "app-omp" end
 	if a == "antigravity" then return "provider-google" end
+	if a == "carly" then return "sparkle" end
 	return "puzzle"
 end
 
@@ -210,6 +211,18 @@ local function group_head(g, n)
 	})
 end
 
+local function session_actions(s)
+	local acts = {}
+	if resume_cmd(s) then
+		acts[#acts + 1] = action_button("play", "Resume this session", "resume:" .. key_of(s))
+		acts[#acts + 1] = action_button("copy", "Copy the resume command", "copy:" .. key_of(s))
+	end
+	acts[#acts + 1] = action_button("pen", "Rename", "rename:" .. key_of(s))
+	acts[#acts + 1] = action_button("tag", "Edit tags", "tag:" .. key_of(s))
+	acts[#acts + 1] = S.hidden[key_of(s)] and action_button("eye", "Restore to list", "restore:" .. key_of(s)) or action_button("trash", "Hide or delete", "delete:" .. key_of(s))
+	return acts
+end
+
 local function session_row(s)
 	return ui.node("row", { key = key_of(s), gap = "sm", align = "start" }, {
 		ui.node("icon", { name = agent_icon(s.agent) }),
@@ -220,13 +233,7 @@ local function session_row(s)
 			}),
 			meta_row(s),
 		}),
-		ui.node("row", { gap = "xs", shrink = 0, basis = "content" }, {
-			action_button("play", "Resume this session", "resume:" .. key_of(s)),
-			action_button("copy", "Copy the resume command", "copy:" .. key_of(s)),
-			action_button("pen", "Rename", "rename:" .. key_of(s)),
-			action_button("tag", "Edit tags", "tag:" .. key_of(s)),
-			S.hidden[key_of(s)] and action_button("eye", "Restore to list", "restore:" .. key_of(s)) or action_button("trash", "Hide or delete", "delete:" .. key_of(s)),
-		}),
+		ui.node("row", { gap = "xs", shrink = 0, basis = "content" }, session_actions(s)),
 	})
 end
 
@@ -310,12 +317,14 @@ local function build_detail()
 		}),
 		ui.badge(s.agent),
 	})
-	local actions = ui.node("row", { gap = "sm", wrap = true }, {
-		ui.button("Resume", { size = "sm", variant = "primary", actions = { click = "resume:" .. key_of(s) } }),
-		ui.button("Copy", { size = "sm", variant = "quiet", actions = { click = "copy:" .. key_of(s) } }),
-		ui.button("Rename", { size = "sm", variant = "quiet", actions = { click = "rename:" .. key_of(s) } }),
-		ui.button("Tags", { size = "sm", variant = "quiet", actions = { click = "tag:" .. key_of(s) } }),
-	})
+	local buttons = {}
+	if resume_cmd(s) then
+		buttons[#buttons + 1] = ui.button("Resume", { size = "sm", variant = "primary", actions = { click = "resume:" .. key_of(s) } })
+		buttons[#buttons + 1] = ui.button("Copy", { size = "sm", variant = "quiet", actions = { click = "copy:" .. key_of(s) } })
+	end
+	buttons[#buttons + 1] = ui.button("Rename", { size = "sm", variant = "quiet", actions = { click = "rename:" .. key_of(s) } })
+	buttons[#buttons + 1] = ui.button("Tags", { size = "sm", variant = "quiet", actions = { click = "tag:" .. key_of(s) } })
+	local actions = ui.node("row", { gap = "sm", wrap = true }, buttons)
 	local meta_nodes = { ui.text({ ui.span(s.cwd or "?", "muted") }) }
 	for _, tag in ipairs(t.tags or {}) do
 		meta_nodes[#meta_nodes + 1] = ui.badge("#" .. cut_chars(tag, 16))
@@ -327,7 +336,14 @@ local function build_detail()
 	else
 		body = ui.md(S.transcript or "_(no messages)_")
 	end
-	return ui.node("col", { gap = "sm" }, { head, ui.rule(), actions, meta, ui.rule(), body })
+	local kids = { head, ui.rule(), actions }
+	if s.agent == "carly" then
+		kids[#kids + 1] = ui.text({ ui.span("Carly transcripts are read-only here: search, tag or delete them; they can't be resumed.", "muted") })
+	end
+	kids[#kids + 1] = meta
+	kids[#kids + 1] = ui.rule()
+	kids[#kids + 1] = body
+	return ui.node("col", { gap = "sm" }, kids)
 end
 
 local function render(cx)
@@ -427,14 +443,14 @@ local function open_dashboard(cx)
 		S.pane = pane
 		cx.layout:focus(pane)
 		pcall(function()
-			cx.canvas:set(pane, { about = "Session history for Claude Code, Antigravity, Pi and omp. Resume or copy a command; aliases and tags live in this plugin's own database and never touch the session files." })
+			cx.canvas:set(pane, { about = "Session history for Claude Code, Antigravity, Pi, omp and Carly. Resume or copy a command; aliases and tags live in this plugin's own database and never touch the session files." })
 		end)
 		refresh(cx)
 		return
 	end
 	local p, err = cx.canvas:open({
 		title = "Agent Sessions",
-		about = "Session history for Claude Code, Antigravity, Pi and omp. Resume or copy a command; aliases and tags live in this plugin's own database and never touch the session files.",
+		about = "Session history for Claude Code, Antigravity, Pi, omp and Carly. Resume or copy a command; aliases and tags live in this plugin's own database and never touch the session files.",
 		view = ui.node("col", { gap = "sm" }, { ui.text("Scanning sessions…") }),
 	})
 	if not p then

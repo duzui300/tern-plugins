@@ -31,6 +31,9 @@ if (agent === 'claude') {
   rm(file.replace(/\.jsonl$/i, ''));
 } else if (agent === 'pi') {
   rm(file);
+} else if (agent === 'carly') {
+  rm(file);
+  rm(file.replace(/\.jsonl$/i, ''));
 } else if (agent === 'omp') {
   rm(file);
   rm(file.replace(/\.jsonl$/i, ''));

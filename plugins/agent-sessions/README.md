@@ -8,14 +8,15 @@ A Tern canvas that turns the agent histories already on your machine into one se
   <img src="docs/session-detail.png" alt="Session detail" height="460" />
 </p>
 
-Claude Code, Antigravity, Pi and omp each keep conversations in their own format and directory. Finding the one you want means remembering which tool, which project and which UUID. This plugin reads those stores, groups the sessions by agent, folder or tag, and resumes one with a click.
+Claude Code, Antigravity, Pi, omp and Carly each keep conversations in their own format and directory. Finding the one you want means remembering which tool, which project and which UUID. This plugin reads those stores, groups the sessions by agent, folder or tag, and resumes one with a click when the agent supports it.
 
 ## Features
 
-- Four adapters: Claude Code, Antigravity (IDE and CLI), Pi and omp.
+- Five adapters: Claude Code, Antigravity (IDE and CLI), Pi, omp and Carly.
 - Group by agent, folder or tag; filter by folder or tag; search titles, paths and tags.
 - Collapsible groups, collapsed by default, with expand-all/collapse-all.
 - Resume in a new Tern tab with the agent's own command, or copy the command; Claude Code and Antigravity resume with `--dangerously-skip-permissions` and omp with `--approval-mode=yolo`, so a resumed session does not stop at permission prompts.
+- Carly transcripts are read-only here: search, rename, tag, read and delete them, but they have no resume command.
 - Aliases and tags live in the plugin's own SQLite database. Session files are never written.
 - Hide noisy sessions, or delete a session from disk behind a two-step confirmation.
 - Responsive layout: rows wrap and the action column stays aligned when the pane narrows.
@@ -28,6 +29,7 @@ Claude Code, Antigravity, Pi and omp each keep conversations in their own format
 | Antigravity | `~/.gemini/antigravity{,-cli}/conversation_summaries.db`, plus `brain/<id>/.system_generated/logs/transcript_full.jsonl` (IDE transcripts are chunked under `chunks/transcript_full/`) | `agy --conversation <id> --dangerously-skip-permissions` |
 | Pi | `~/.pi/agent/sessions/<project>/<time>_<id>.jsonl` | `pi --session <id>` |
 | omp | `~/.omp/agent/sessions/<project>/<time>_<id>.jsonl` | `omp --resume <id> --approval-mode=yolo` |
+| Carly | `%LOCALAPPDATA%\Tern\carly\main\sessions\<time>_<id>.jsonl` on Windows; `~/Library/Application Support/Tern/...` on macOS; `~/.local/share/Tern/...` on Linux | — (read-only) |
 
 The plugin never writes to these files. Antigravity data is opened read-only through `node:sqlite`.
 
@@ -52,8 +54,8 @@ Run **Agent sessions** from the palette (`plugin.agent-sessions.open`).
 
 - **Toolbar**: filter by folder or tag, search, switch grouping (agent, folder, tag), expand/collapse all, show hidden sessions, rescan.
 - **Groups**: collapsed by default. Click a group header to expand or collapse it; the badge counts its sessions.
-- **Rows**: click a title to read the transcript. The icon buttons resume, copy the resume command, rename, edit tags, or hide/delete.
-- **Detail**: Back, Resume, Copy, Rename, Tags; the transcript renders as Markdown.
+- **Rows**: click a title to read the transcript. The icon buttons resume, copy the resume command, rename, edit tags, or hide/delete; Carly rows drop the first two.
+- **Detail**: Back, Resume, Copy, Rename, Tags; the transcript renders as Markdown. Carly transcripts show a read-only note instead of Resume/Copy.
 
 ### Aliases and tags
 
@@ -65,13 +67,13 @@ Stored in `<Tern state>/plugin-data/agent-sessions/tags.db`, keyed by `agent` an
 ### Hide and delete
 
 - **Hide from this list** keeps the files. The eye button shows hidden sessions again, where they can be restored.
-- **Delete from disk...** asks once more, then removes the agent's files for that session: the JSONL and its companion directory for Claude/omp, the JSONL for Pi, or the conversation database, brain folder and summary rows for Antigravity. This cannot be undone, and the agent must not be using the session.
+- **Delete from disk...** asks once more, then removes the agent's files for that session: the JSONL and its companion directory for Claude/omp/Carly, the JSONL for Pi, or the conversation database, brain folder and summary rows for Antigravity. This cannot be undone, and the agent must not be using the session.
 
 ## How it works
 
 The plugin is a window-half Tern plugin. `window.luau` draws a `tern.canvas` panel and handles actions; file and SQLite work runs in small Node helpers through `tern.process.run`:
 
-- `scan.js` walks the four stores and prints a JSON array of `{agent, id, title, cwd, path, time}`.
+- `scan.js` walks the five stores and prints a JSON array of `{agent, id, title, cwd, path, time}`.
 - `transcript.js` renders one session to Markdown (`--agent`, `--path`, `--id`).
 - `tags.js` manages the SQLite sidecar for aliases, tags and hidden sessions (`get`, `set`, `hidden`, `hide`, `unhide`).
 - `delete.js` removes one session's files after confirmation.
@@ -91,6 +93,7 @@ Editing `window.luau` needs a reload; the Node helpers are read on the next scan
 - Antigravity conversations without a transcript show their summary title and no messages.
 - If `agents.auto_acp` intercepts `claude` or `agy`, `--resume` may not pass through. Add the id to `agents.keep_tui`, or use Copy, to resume in the native interface.
 - omp companion files without `.jsonl` are not listed; some are access-restricted while omp is running.
+- Carly keeps one JSONL per conversation under Tern's own data directory; deleting the conversation that is currently open can fail on Windows while the chat holds the file.
 
 ## License
 

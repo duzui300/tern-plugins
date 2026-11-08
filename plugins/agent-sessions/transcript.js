@@ -92,10 +92,29 @@ function agy() {
   }
 }
 
+function carlyContext(t) {
+  return String(t || '').replace(/<context>[\s\S]*?<\/context>/g, '').trim();
+}
+
+function carly() {
+  for (const line of lines(file)) {
+    if (!line) continue;
+    let o; try { o = JSON.parse(line); } catch { continue; }
+    if (o.type !== 'message' || !o.message) continue;
+    const r = o.message.role;
+    if (r !== 'user' && r !== 'assistant') continue;
+    const c = o.message.content;
+    let t = typeof c === 'string' ? c : (Array.isArray(c) ? c.filter(x => x && x.type === 'text').map(x => x.text).join('\n\n') : '');
+    if (r === 'user') t = carlyContext(t);
+    add(r === 'user' ? 'You' : 'Assistant', t);
+  }
+}
+
 try {
   if (agent === 'claude') claude();
   else if (agent === 'pi' || agent === 'omp') pi();
   else if (agent === 'antigravity') agy();
+  else if (agent === 'carly') carly();
   flush();
   if (!out.length) out.push('_No messages found._');
   let text = out.join('\n\n');

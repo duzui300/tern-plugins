@@ -49,6 +49,41 @@ function ompMeta(p) {
   }
   return { id, cwd, title };
 }
+
+function carlyUserText(t) {
+  return clean(String(t || '')
+    .replace(/<context>[\s\S]*?<\/context>/g, ' ')
+    .replace(/<attachment\b[^>]*>[\s\S]*?<\/attachment>/g, ' '));
+}
+
+function carlyMeta(p) {
+  let id = '', cwd = '', title = '';
+  for (const line of headText(p, 262144).split('\n')) {
+    if (!line) continue;
+    let o; try { o = JSON.parse(line); } catch { continue; }
+    if (o.type === 'title' && o.title) title = clean(o.title);
+    else if (o.type === 'session') { id = o.id || id; cwd = o.cwd || cwd; }
+    if (!title && o.type === 'message' && o.message && o.message.role === 'user') {
+      const c = o.message.content;
+      const text = typeof c === 'string' ? c : (Array.isArray(c) ? c.filter(x => x && x.type === 'text').map(x => x.text).join(' ') : '');
+      const t = carlyUserText(text);
+      if (t) title = t;
+    }
+    if (id && cwd && title) break;
+  }
+  return { id, cwd, title };
+}
+
+function carlySessionsDir() {
+  const candidates = [];
+  if (process.env.TERN_BLOB_DIR) candidates.push(path.join(path.dirname(process.env.TERN_BLOB_DIR), 'carly', 'main', 'sessions'));
+  if (process.env.LOCALAPPDATA) candidates.push(path.join(process.env.LOCALAPPDATA, 'Tern', 'carly', 'main', 'sessions'));
+  if (process.platform === 'darwin') candidates.push(path.join(home, 'Library', 'Application Support', 'Tern', 'carly', 'main', 'sessions'));
+  candidates.push(path.join(process.env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'Tern', 'carly', 'main', 'sessions'));
+  for (const d of candidates) { try { if (fs.statSync(d).isDirectory()) return d; } catch {} }
+  return '';
+}
+
 function clean(s) {
   return String(s || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
 }
@@ -205,6 +240,27 @@ for (const proj of readdir(ompBase)) {
     out.push({
       agent: 'omp',
       id: m.id,
+      title: m.title || '(untitled)',
+      cwd: m.cwd,
+      path: p,
+      time: st.mtimeMs,
+      preview: m.title || '',
+    });
+  }
+}
+
+const carlyBase = carlySessionsDir();
+if (carlyBase) {
+  for (const f of readdir(carlyBase)) {
+    if (!f.isFile() || !f.name.endsWith('.jsonl')) continue;
+    const p = path.join(carlyBase, f.name);
+    const st = stat(p);
+    if (!st) continue;
+    const m = carlyMeta(p);
+    const id = m.id || f.name.replace(/\.jsonl$/, '').split('_').pop();
+    out.push({
+      agent: 'carly',
+      id,
       title: m.title || '(untitled)',
       cwd: m.cwd,
       path: p,
