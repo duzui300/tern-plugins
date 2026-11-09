@@ -1,4 +1,4 @@
--- Agent Sessions: browse Claude Code / Antigravity / Pi history.
+-- Agent Sessions: browse Claude Code / Codex / Antigravity / Pi / omp history.
 -- Aliases and tags live in this plugin's own SQLite; session files are never written.
 
 local ui = tern.ui
@@ -19,7 +19,7 @@ local S = {
 	scanning = false,
 }
 
-local AGENT_ORDER = { claude = 1, antigravity = 2, omp = 3, pi = 4 }
+local AGENT_ORDER = { claude = 1, codex = 2, antigravity = 3, omp = 4, pi = 5 }
 
 local function trim(s)
 	return (s or ""):match("^%s*(.-)%s*$")
@@ -104,8 +104,45 @@ local function short_meta(s)
 	return cut_chars(table.concat(bits, "  "), 34)
 end
 
+local function resolve_executable(name)
+	local windows = tern.runtime.os == "windows"
+	local bin = if windows and not name:match("%.exe$") then name .. ".exe" else name
+	local candidates = {}
+	for dir in (tern.getenv("PATH") or ""):gmatch(if windows then "[^;]+" else "[^:]+") do
+		if dir ~= "" then
+			candidates[#candidates + 1] = dir .. "/" .. bin
+		end
+	end
+	local home = tern.getenv("HOME") or tern.getenv("USERPROFILE")
+	if home and not windows then
+		candidates[#candidates + 1] = home .. "/.local/bin/" .. bin
+		candidates[#candidates + 1] = home .. "/.local/share/tern-agents-ui/bin/" .. bin
+		candidates[#candidates + 1] = "/opt/homebrew/bin/" .. bin
+		candidates[#candidates + 1] = "/usr/local/bin/" .. bin
+	end
+	for _, path in ipairs(candidates) do
+		local ok, exists = pcall(tern.fs.exists, path)
+		if ok and exists then return path end
+	end
+	return nil
+end
+
+local function quote_arg(s)
+	if not s:find("[^%w_%-%.%/]") then return s end
+	return "'" .. s:gsub("'", "'\\''") .. "'"
+end
+
 local function resume_cmd(s)
-	if s.agent == "claude" then return "claude --resume " .. s.id end
+	if s.agent == "claude" then
+		local tclaude = resolve_executable("tclaude")
+		if tclaude then return quote_arg(tclaude) .. " -resume " .. s.id end
+		return "claude --resume " .. s.id
+	end
+	if s.agent == "codex" then
+		local tcodex = resolve_executable("tcodex")
+		if tcodex then return quote_arg(tcodex) .. " -resume " .. s.id end
+		return "codex resume " .. s.id
+	end
 	if s.agent == "pi" then return "pi --session " .. s.id end
 	if s.agent == "omp" then return "omp --resume " .. s.id end
 	if s.agent == "antigravity" then return "agy --conversation " .. s.id end
@@ -222,7 +259,7 @@ local function session_row(s)
 			action_button("copy", "Copy the resume command", "copy:" .. key_of(s)),
 			action_button("pen", "Rename", "rename:" .. key_of(s)),
 			action_button("tag", "Edit tags", "tag:" .. key_of(s)),
-			S.hidden[key_of(s)] and action_button("eye", "Restore to list", "restore:" .. key_of(s)) or action_button("trash", "Hide or delete", "delete:" .. key_of(s)),
+			S.hidden[key_of(s)] and action_button("eye", "Restore to list", "restore:" .. key_of(s)) or action_button("trash", s.agent == "codex" and "Hide from this list" or "Hide or delete", "delete:" .. key_of(s)),
 		}),
 	})
 end
@@ -339,7 +376,8 @@ local function render(cx)
 end
 
 local function run_node(argv, timeout, cb)
-	local full = { "node", DIR .. "/" .. argv[1] }
+	local node = resolve_executable("node") or "node"
+	local full = { node, DIR .. "/" .. argv[1] }
 	for i = 2, #argv do
 		full[#full + 1] = argv[i]
 	end
@@ -424,14 +462,14 @@ local function open_dashboard(cx)
 		S.pane = pane
 		cx.layout:focus(pane)
 		pcall(function()
-			cx.canvas:set(pane, { about = "Session history for Claude Code, Antigravity, Pi and omp. Resume or copy a command; aliases and tags live in this plugin's own database and never touch the session files." })
+			cx.canvas:set(pane, { about = "Session history for Claude Code, Codex, Antigravity, Pi and omp. Resume or copy a command; aliases and tags live in this plugin's own database and never touch the session files." })
 		end)
 		refresh(cx)
 		return
 	end
 	local p, err = cx.canvas:open({
 		title = "Agent Sessions",
-		about = "Session history for Claude Code, Antigravity, Pi and omp. Resume or copy a command; aliases and tags live in this plugin's own database and never touch the session files.",
+		about = "Session history for Claude Code, Codex, Antigravity, Pi and omp. Resume or copy a command; aliases and tags live in this plugin's own database and never touch the session files.",
 		view = ui.node("col", { gap = "sm" }, { ui.text("Scanning sessions…") }),
 	})
 	if not p then
@@ -650,6 +688,11 @@ local function confirm_delete(cx, s)
 end
 
 local function delete_session(cx, s)
+	-- Codex has indexes and other state beyond its rollout; only hiding is supported.
+	if s.agent == "codex" then
+		hide_session(cx, s)
+		return
+	end
 	cx:pick({ items = {
 		{ label = "Hide from this list", detail = "keeps the session files" },
 		{ label = "Delete from disk…", detail = "permanent, cannot be undone" },
