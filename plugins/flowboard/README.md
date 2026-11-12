@@ -1,20 +1,25 @@
 # Flow Board
 
-A responsive board view for Markdown task boards such as `TODO.md`. It mirrors the desktop board's toolbar, lanes, card boxes and circular checkboxes, and packs lanes into balanced columns: short lanes stack under longer ones and each column scrolls inside the pane as the board resizes.
-
+A responsive board view for Markdown task boards such as `TODO.md`. It mirrors the desktop board's toolbar, lanes, card typography, card boxes and circular checkboxes. Lanes stay in file order and are packed into contiguous balanced columns: short lanes stack under longer ones, each column scrolls, and the columns share the available pane width.
 
 ## Features
 
 - The native board's toolbar: file name and path, open/done counts, **Filter** search, **Hide done cards**, **Board/List** switch and the **Board menu**.
-- Lanes with title, card count, **New card at the top**, **Lane menu**, **Add card** and **Add lane**.
-- Balanced columns that repack when the pane width changes; each column scrolls instead of growing the whole board.
-- Native-looking card boxes with circular completion controls.
+- Native lane headers: title, count beside the name, a quiet **New card at the top** button and a centered lane menu.
+- Lane actions: **New card at the top**, **Lane menu**, **Add card** and **Add lane**.
+- Native card typography (13 px) with 4 px gaps, card boxes and circular completion controls.
+- Packed columns that preserve lane order, share the pane width and repack as the pane resizes; a single column fills the pane.
+- Each column scrolls inside the pane instead of making the whole board grow.
 - Card checkboxes move cards into the **Done** lane, as the native board does.
 - Search filters cards (and hides empty lanes while filtering); hide done hides completed cards.
 - Board menu: new card below, new lane, undo/redo, hide done, switch view, open as Markdown, reveal, copy path and close.
 - Lane menu: new card, rename lane, new lane, move lane left/right, done lane and delete lane.
 - `Ctrl+Z` / `Ctrl+Y` undo and redo board changes.
 - Reads and writes the board's Markdown file in place, so the native board and this view stay in sync.
+
+## Layout
+
+Lanes are packed into contiguous columns in file order. The plugin estimates each lane's height from its cards, then uses a balanced partition so short lanes fill the same column as longer ones. Without enough width for a full lane, the view falls back to one scrolling column. Columns use the available pane width, so a wide pane or a single pane expands the lanes instead of leaving fixed 272 px columns.
 
 ## Install
 
@@ -53,7 +58,7 @@ Lanes are `## Title` headings and cards are `- [ ] text` or `- [x] text`. The pl
 ## Limitations
 
 - This is a plugin block, not a replacement for the native board. The native board remains the default for `.md` files; use **Open with → Flow Board** or the palette commands.
-- Plugin blocks do not expose their pixel width to Lua. The window half reads the pane size from Tern's accessibility header and sends it to the block, which repacks the columns. While the Flow Board itself has keyboard focus Tern hides that header, so a resize may need a click on another pane before the new width arrives.
+- Pane width comes from the block's resize callback. Pane and window resizes repack the columns; during a live split drag while the Flow Board itself has focus Tern may defer the width update, and clicking another pane refreshes it. The window half also polls the pane's accessibility header as a fallback.
 - Card notes, subtasks, tags and due dates are displayed as part of the card text; editing those details is not implemented yet.
 - Drag and drop between lanes is not implemented; use the checkbox or the card/lane menus.
 
