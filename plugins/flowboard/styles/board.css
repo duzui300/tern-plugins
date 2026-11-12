@@ -134,11 +134,28 @@
 		border: 0;
 	}
 
+	.fb-lane-head .sf-menu-anchor {
+		align-self: center;
+		display: flex;
+	}
+
 	.fb-lane-head .sf-menu-trigger {
 		align-items: center;
 		display: flex;
 		justify-content: center;
+		min-width: 22px;
 		padding: 0;
+	}
+
+	.fb-lane-head .sf-menu-trigger .sf-menu-caret {
+		display: none;
+	}
+
+	.fb-lane-head .sf-menu-trigger .sf-btn-label {
+		font-size: 13px;
+		font-weight: 400;
+		letter-spacing: 0;
+		line-height: 1;
 	}
 
 	.fb-lane-head .sf-menu-trigger .sf-btn-ic {

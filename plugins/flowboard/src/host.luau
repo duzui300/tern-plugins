@@ -389,6 +389,25 @@ local function insert_lane(state: State, after: number?)
 	write_board(state)
 end
 
+local function card_menu(state: State, lane_index: number, card_index: number): { any }
+	local items: { any } = {
+		{ id = "edit_card:" .. lane_index .. ":" .. card_index, label = "Edit card", icon = "pencil" },
+		{ id = "new_card_after:" .. lane_index .. ":" .. card_index, label = "New card below", icon = "plus" },
+	}
+	local moves: { any } = {}
+	for index, lane in ipairs(state.lanes) do
+		if index ~= lane_index then
+			moves[#moves + 1] = { id = "move_card:" .. lane_index .. ":" .. card_index .. ":" .. index, label = lane.title }
+		end
+	end
+	if #moves > 0 then
+		items[#items + 1] = { label = "Move to lane", icon = "arrow-right", items = moves }
+	end
+	items[#items + 1] = "-"
+	items[#items + 1] = { id = "delete_card:" .. lane_index .. ":" .. card_index, label = "Delete card", icon = "trash", danger = true }
+	return items
+end
+
 local function card_row(state: State, lane_index: number, card_index: number, card: Card): Node
 	local selected = state.selected
 	local is_selected = selected ~= nil and selected.lane == lane_index and selected.card == card_index
@@ -397,6 +416,7 @@ local function card_row(state: State, lane_index: number, card_index: number, ca
 			.. (if card.done then " fb-done" else "")
 			.. (if is_selected then " fb-selected" else ""),
 		role = "flowboard.card",
+		actions = { menu = card_menu(state, lane_index, card_index) },
 	}, {
 		ui.el("input", {
 			type = "checkbox",
@@ -408,9 +428,10 @@ local function card_row(state: State, lane_index: number, card_index: number, ca
 			actions = {
 				click = "select:" .. lane_index .. ":" .. card_index,
 				dblclick = "edit_card:" .. lane_index .. ":" .. card_index,
+				menu = card_menu(state, lane_index, card_index),
 			},
 		}, {
-			ui.el("div", { class = "fb-card-title", text = card.text }),
+			ui.el("div", { class = "fb-card-title", text = card.text, actions = { menu = card_menu(state, lane_index, card_index) } }),
 		}),
 	})
 end
@@ -497,7 +518,7 @@ local function lane_view(state: State, lane_index: number, lane: Lane): Node?
 	}), { actions = { click = "new_card_top:" .. lane_index } })
 	head[#head + 1] = ui.node("menu", {
 		key = "lane-menu",
-		icon = "more",
+		text = "•••",
 		size = "sm",
 		title = "Lane menu",
 		trigger = "quiet",
@@ -522,8 +543,15 @@ local function lane_view(state: State, lane_index: number, lane: Lane): Node?
 			}),
 		})
 	end
+	local editor_added = false
+	local function add_editor()
+		if not editor_added then
+			body[#body + 1] = editor_node()
+			editor_added = true
+		end
+	end
 	if new_at == 1 then
-		body[#body + 1] = editor_node()
+		add_editor()
 	end
 	for card_index, card in ipairs(lane.cards) do
 		local matches = query == "" or card.text:lower():find(query, 1, true) ~= nil
@@ -535,11 +563,11 @@ local function lane_view(state: State, lane_index: number, lane: Lane): Node?
 			end
 		end
 		if new_at == card_index + 1 then
-			body[#body + 1] = editor_node()
+			add_editor()
 		end
 	end
 	if new_at ~= nil and new_at > #lane.cards then
-		body[#body + 1] = editor_node()
+		add_editor()
 	end
 	body[#body + 1] = with(ui.button("Add card", {
 		icon = "plus",
@@ -908,6 +936,47 @@ local function handle_action(state: State, act: string, checked: boolean?, cx: B
 	lane_index, card_index = act:match("^edit_card:(%d+):(%d+)$")
 	if lane_index then
 		start_card_edit(state, tonumber(lane_index), tonumber(card_index), nil)
+		return
+	end
+	lane_index, card_index = act:match("^new_card_after:(%d+):(%d+)$")
+	if lane_index then
+		local lane = state.lanes[tonumber(lane_index)]
+		local index = tonumber(card_index)
+		if lane and lane.cards[index] then
+			start_card_edit(state, tonumber(lane_index), nil, index + 1)
+		end
+		return
+	end
+	local from_lane, to_lane
+	from_lane, card_index, to_lane = act:match("^move_card:(%d+):(%d+):(%d+)$")
+	if from_lane then
+		local source = state.lanes[tonumber(from_lane)]
+		local target = state.lanes[tonumber(to_lane)]
+		local index = tonumber(card_index)
+		local card = source and source.cards[index]
+		if source and target and card and source ~= target then
+			remember(state)
+			table.remove(source.cards, index)
+			card.raw = nil
+			card.done = target.done
+			table.insert(target.cards, card)
+			state.selected = { lane = tonumber(to_lane), card = #target.cards }
+			state.editing = nil
+			write_board(state)
+		end
+		return
+	end
+	lane_index, card_index = act:match("^delete_card:(%d+):(%d+)$")
+	if lane_index then
+		local lane = state.lanes[tonumber(lane_index)]
+		local index = tonumber(card_index)
+		if lane and lane.cards[index] then
+			remember(state)
+			table.remove(lane.cards, index)
+			state.selected = nil
+			state.editing = nil
+			write_board(state)
+		end
 		return
 	end
 	lane_index = act:match("^rename_lane:(%d+)$")

@@ -11,6 +11,7 @@ A responsive board view for Markdown task boards such as `TODO.md`. It mirrors t
 - Packed columns that preserve lane order, share the pane width and repack as the pane resizes; a single column fills the pane.
 - Each column scrolls inside the pane instead of making the whole board grow.
 - Card checkboxes move cards into the **Done** lane, as the native board does.
+- Right-click a card for **Edit card**, **New card below**, **Move to lane** and **Delete card**.
 - Search filters cards (and hides empty lanes while filtering); hide done hides completed cards.
 - Board menu: new card below, new lane, undo/redo, hide done, switch view, open as Markdown, reveal, copy path and close.
 - Lane menu: new card, rename lane, new lane, move lane left/right, done lane and delete lane.
@@ -60,7 +61,7 @@ Lanes are `## Title` headings and cards are `- [ ] text` or `- [x] text`. The pl
 - This is a plugin block, not a replacement for the native board. The native board remains the default for `.md` files; use **Open with → Flow Board** or the palette commands.
 - Pane width comes from the block's resize callback. Pane and window resizes repack the columns; during a live split drag while the Flow Board itself has focus Tern may defer the width update, and clicking another pane refreshes it. The window half also polls the pane's accessibility header as a fallback.
 - Card notes, subtasks, tags and due dates are displayed as part of the card text; editing those details is not implemented yet.
-- Drag and drop between lanes is not implemented; use the checkbox or the card/lane menus.
+- Tern's plugin UI exposes click, double-click and right-click actions but no pointer drag/drop events, so cards cannot be dragged between lanes in this block. Use **Move to lane** in a card's right-click menu; the native board still supports dragging.
 
 ## Development
 
