@@ -1,0 +1,173 @@
+/* Flow Board: the native board's toolbar and lanes, with lanes that wrap. */
+[data-surface='plugin.flowboard.board'] {
+	&.sf-main {
+		overflow: auto;
+		padding: 10px 12px;
+	}
+
+	.fb-root {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		min-height: 0;
+	}
+
+	.fb-toolbar {
+		align-items: center;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		min-height: 26px;
+	}
+
+	.fb-title {
+		align-items: baseline;
+		display: flex;
+		gap: 8px;
+		min-width: 0;
+	}
+
+	.fb-path {
+		display: inline-block;
+		max-width: 220px;
+		vertical-align: bottom;
+	}
+
+	.fb-path .sf-text {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.fb-path,
+	.fb-count {
+		color: var(--t3);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.fb-spacer {
+		flex: 1 1 auto;
+	}
+
+	.fb-filter {
+		width: 120px;
+	}
+
+	.fb-filter .sf-input {
+		width: 100%;
+	}
+
+	.fb-lanes {
+		align-items: flex-start;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 12px;
+		min-height: 0;
+	}
+
+	.fb-lane {
+		background: var(--l1);
+		border: 1px solid var(--l2);
+		border-radius: 8px;
+		display: flex;
+		flex: 0 1 272px;
+		flex-direction: column;
+		max-height: 60vh;
+		min-width: 200px;
+		overflow: hidden;
+	}
+
+	.fb-list .fb-lane {
+		flex: 1 1 100%;
+		max-height: none;
+	}
+
+	.fb-lane-head {
+		align-items: center;
+		display: flex;
+		gap: 6px;
+		min-height: 36px;
+		padding: 0 8px;
+	}
+
+	.fb-lane-title {
+		flex: 1 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.fb-lane-count {
+		color: var(--t3);
+		flex: none;
+	}
+
+	.fb-lane-body {
+		display: flex;
+		flex-direction: column;
+		gap: 0;
+		min-height: 0;
+		overflow: auto;
+		padding: 0 4px 4px;
+	}
+
+	.fb-lane.fb-folded .fb-lane-body {
+		display: none;
+	}
+
+	.fb-card {
+		align-items: center;
+		border-radius: 6px;
+		cursor: default;
+		display: flex;
+		gap: 8px;
+		min-height: 34px;
+		padding: 0 6px;
+	}
+
+	.fb-card:hover {
+		background: var(--l2);
+	}
+
+	.fb-card.fb-selected {
+		background: var(--l1);
+		box-shadow: inset 0 0 0 1px var(--accent);
+	}
+
+	.fb-card.fb-done .sf-text {
+		color: var(--t3);
+		text-decoration: line-through;
+	}
+
+	.fb-card > .sf-el {
+		flex: none;
+	}
+
+	.fb-card > .sf-text {
+		flex: 1 1 auto;
+		min-width: 0;
+	}
+
+	.fb-editor {
+		padding: 2px 4px 4px;
+	}
+
+	.fb-add {
+		align-items: center;
+		background: transparent;
+		border: 1px dashed var(--l2);
+		border-radius: 8px;
+		display: flex;
+		flex: 0 1 272px;
+		justify-content: center;
+		min-height: 60px;
+		min-width: 200px;
+	}
+
+	.fb-error {
+		color: var(--bad);
+	}
+}

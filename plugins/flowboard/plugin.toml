@@ -1,0 +1,15 @@
+schema = 1
+id = "flowboard"
+name = "Flow Board"
+version = "0.1.0"
+description = "A responsive Flow Board for Markdown task boards: the native board's toolbar, lanes and cards, with lanes that wrap as the pane resizes."
+icon = "kanban"
+host = "src/host.luau"
+window = "src/window.luau"
+styles = ["styles/board.css"]
+
+[[blocks]]
+id = "board"
+title = "Flow Board"
+icon = "kanban"
+files = ["TODO.md", "TASKS.md", "BOARD.md", "KANBAN.md"]
