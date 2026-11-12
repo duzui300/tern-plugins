@@ -391,19 +391,26 @@ end
 local function card_row(state: State, lane_index: number, card_index: number, card: Card): Node
 	local selected = state.selected
 	local is_selected = selected ~= nil and selected.lane == lane_index and selected.card == card_index
-	return ui.el("label", {
+	return ui.el("div", {
 		class = "fb-card"
 			.. (if card.done then " fb-done" else "")
 			.. (if is_selected then " fb-selected" else ""),
 		role = "flowboard.card",
-		actions = { click = "select:" .. lane_index .. ":" .. card_index },
 	}, {
 		ui.el("input", {
 			type = "checkbox",
 			name = "toggle:" .. lane_index .. ":" .. card_index,
 			checked = card.done,
 		}),
-		ui.text({ ui.span(card.text, if card.done then "muted" else nil) }),
+		ui.el("div", {
+			class = "fb-card-text",
+			actions = {
+				click = "select:" .. lane_index .. ":" .. card_index,
+				dblclick = "edit_card:" .. lane_index .. ":" .. card_index,
+			},
+		}, {
+			ui.text({ ui.span(card.text, if card.done then "muted" else nil) }),
+		}),
 	})
 end
 
@@ -816,6 +823,11 @@ local function handle_action(state: State, act: string, checked: boolean?, cx: B
 		start_card_edit(state, tonumber(lane_index), nil, nil)
 		return
 	end
+	lane_index, card_index = act:match("^edit_card:(%d+):(%d+)$")
+	if lane_index then
+		start_card_edit(state, tonumber(lane_index), tonumber(card_index), nil)
+		return
+	end
 	lane_index = act:match("^rename_lane:(%d+)$")
 	if lane_index then
 		start_lane_edit(state, tonumber(lane_index))
@@ -975,7 +987,12 @@ tern.block.define("board", {
 
 	event = function(state: State, event: UiEvent, cx: BlockCx)
 		if event.ev == "action" then
-			handle_action(state, tostring(event.act or ""), event.checked, cx)
+			local act = tostring(event.act or "")
+			if state.focus == "filter" and act ~= "clear" then
+				state.focus = nil
+				cx:frame({ { "focus", nil } })
+			end
+			handle_action(state, act, event.checked, cx)
 			return
 		end
 		if event.ev == "change" then
