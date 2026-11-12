@@ -1,12 +1,14 @@
 # Flow Board
 
-A responsive board view for Markdown task boards such as `TODO.md`. It mirrors the desktop board's toolbar, lanes and cards, but its lanes use CSS flex-wrap, so they reflow into rows as the pane narrows instead of each lane taking a fixed full-height column.
+A responsive board view for Markdown task boards such as `TODO.md`. It mirrors the desktop board's toolbar, lanes, card boxes and circular checkboxes, and packs lanes into balanced columns: short lanes stack under longer ones and each column scrolls inside the pane as the board resizes.
 
 
 ## Features
 
 - The native board's toolbar: file name and path, open/done counts, **Filter** search, **Hide done cards**, **Board/List** switch and the **Board menu**.
 - Lanes with title, card count, **New card at the top**, **Lane menu**, **Add card** and **Add lane**.
+- Balanced columns that repack when the pane width changes; each column scrolls instead of growing the whole board.
+- Native-looking card boxes with circular completion controls.
 - Card checkboxes move cards into the **Done** lane, as the native board does.
 - Search filters cards (and hides empty lanes while filtering); hide done hides completed cards.
 - Board menu: new card below, new lane, undo/redo, hide done, switch view, open as Markdown, reveal, copy path and close.
@@ -51,7 +53,7 @@ Lanes are `## Title` headings and cards are `- [ ] text` or `- [x] text`. The pl
 ## Limitations
 
 - This is a plugin block, not a replacement for the native board. The native board remains the default for `.md` files; use **Open with → Flow Board** or the palette commands.
-- Tern plugin blocks report a fixed 80x24 cell grid, so the block cannot measure its pixel width from Lua. The lane layout therefore relies on CSS flex-wrap rather than computed masonry.
+- Plugin blocks do not expose their pixel width to Lua. The window half reads the pane size from Tern's accessibility header and sends it to the block, which repacks the columns. While the Flow Board itself has keyboard focus Tern hides that header, so a resize may need a click on another pane before the new width arrives.
 - Card notes, subtasks, tags and due dates are displayed as part of the card text; editing those details is not implemented yet.
 - Drag and drop between lanes is not implemented; use the checkbox or the card/lane menus.
 

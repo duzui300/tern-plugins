@@ -26,6 +26,7 @@ type Editing = {
 type State = {
 	path: string,
 	lanes: { Lane },
+	cols: number,
 	filter: string,
 	filter_cursor: number,
 	hide_done: boolean,
@@ -409,7 +410,7 @@ local function card_row(state: State, lane_index: number, card_index: number, ca
 				dblclick = "edit_card:" .. lane_index .. ":" .. card_index,
 			},
 		}, {
-			ui.text({ ui.span(card.text, if card.done then "muted" else nil) }),
+			ui.el("div", { class = "fb-card-title", text = card.text }),
 		}),
 	})
 end
@@ -555,6 +556,68 @@ local function lane_view(state: State, lane_index: number, lane: Lane): Node?
 	})
 end
 
+local LANE_CELLS = 34
+
+local function estimated(lane: Lane): number
+	-- Rows: 36px header (4.5), 22px Add card (2.75), 8px padding (1);
+	-- a card row is 34px (4.25), each extra wrapped line about 18px (2.3).
+	local height = 4.5 + 2.75 + 1
+	for _, card in ipairs(lane.cards) do
+		local lines = math.max(1, math.ceil(#card.text / 32))
+		height += 4.25 + (lines - 1) * 2.3
+	end
+	return height
+end
+
+local function packed_columns(lanes: { Lane }, cols: number): { { Lane } }
+	local count = math.max(1, math.min(#lanes, math.floor(math.max(LANE_CELLS, cols) / LANE_CELLS)))
+	if count <= 1 or #lanes == 0 then
+		return { lanes }
+	end
+	local prefix: { number } = { 0 }
+	for index, lane in ipairs(lanes) do
+		prefix[index + 1] = prefix[index] + estimated(lane)
+	end
+	local dp: { { number } } = {}
+	local cut: { { number } } = {}
+	for column = 1, count do
+		dp[column] = {}
+		cut[column] = {}
+	end
+	for index = 1, #lanes do
+		dp[1][index] = prefix[index + 1]
+	end
+	for column = 2, count do
+		for index = 1, #lanes do
+			dp[column][index] = math.huge
+			for split = column - 1, index - 1 do
+				local cost = math.max(dp[column - 1][split], prefix[index + 1] - prefix[split + 1])
+				if cost < dp[column][index] then
+					dp[column][index] = cost
+					cut[column][index] = split
+				end
+			end
+		end
+	end
+	local groups: { { Lane } } = {}
+	local index = #lanes
+	for column = count, 2, -1 do
+		local split = cut[column][index]
+		local group: { Lane } = {}
+		for lane_index = split + 1, index do
+			table.insert(group, lanes[lane_index])
+		end
+		table.insert(groups, 1, group)
+		index = split
+	end
+	local first: { Lane } = {}
+	for lane_index = 1, index do
+		table.insert(first, lanes[lane_index])
+	end
+	table.insert(groups, 1, first)
+	return groups
+end
+
 local function toolbar(state: State): Node
 	local open, done = counts(state.lanes)
 	local title = ui.el("div", { class = "fb-title" }, {
@@ -601,8 +664,8 @@ local function toolbar(state: State): Node
 	})
 	return ui.el("div", { class = "fb-toolbar" }, {
 		title,
-		count,
 		ui.node("row", { key = "spacer", grow = 1 }),
+		count,
 		filter,
 		hide,
 		tabs,
@@ -611,21 +674,41 @@ local function toolbar(state: State): Node
 end
 
 local function view(state: State, _cx: BlockCx): Node
-	local lanes: { Node } = {}
+	local content: Node
 	if state.view == "board" then
-		for index, lane in ipairs(state.lanes) do
-			local node = lane_view(state, index, lane)
-			if node then
-				table.insert(lanes, node)
+		local packed = packed_columns(state.lanes, state.cols)
+		local groups: { { Node } } = {}
+		for _, group in ipairs(packed) do
+			local lanes: { Node } = {}
+			for _, lane in ipairs(group) do
+				for index, candidate in ipairs(state.lanes) do
+					if candidate == lane then
+						local node = lane_view(state, index, lane)
+						if node then
+							lanes[#lanes + 1] = node
+						end
+						break
+					end
+				end
 			end
+			groups[#groups + 1] = lanes
 		end
-		lanes[#lanes + 1] = ui.el("div", { class = "fb-add" }, {
+		if #groups == 0 then
+			groups[1] = {}
+		end
+		groups[#groups][#groups[#groups] + 1] = ui.el("div", { class = "fb-add" }, {
 			with(ui.button("Add lane", {
 				icon = "plus",
 				variant = "quiet",
 			}), { actions = { click = "new_lane" } }),
 		})
+		local columns: { Node } = {}
+		for _, lanes in ipairs(groups) do
+			columns[#columns + 1] = ui.el("div", { class = "fb-col" }, lanes)
+		end
+		content = ui.el("div", { class = "fb-cols" }, columns)
 	else
+		local lanes: { Node } = {}
 		for index, lane in ipairs(state.lanes) do
 			local node = lane_view(state, index, lane)
 			if node then
@@ -636,10 +719,8 @@ local function view(state: State, _cx: BlockCx): Node
 			icon = "plus",
 			variant = "quiet",
 		}), { actions = { click = "new_lane" } })
+		content = ui.el("div", { class = "fb-lanes fb-list" }, lanes)
 	end
-	local content = ui.el("div", {
-		class = if state.view == "list" then "fb-lanes fb-list" else "fb-lanes",
-	}, lanes)
 	local children: { Node } = { toolbar(state) }
 	if state.error then
 		children[#children + 1] = ui.el("div", { class = "fb-error" }, {
@@ -894,6 +975,7 @@ tern.block.define("board", {
 		return {
 			path = path,
 			lanes = lanes,
+			cols = cx.cols,
 			filter = "",
 			filter_cursor = 0,
 			hide_done = false,
@@ -910,6 +992,10 @@ tern.block.define("board", {
 
 	title = function(state: State): string?
 		return basename(state.path) .. " · Flow Board"
+	end,
+
+	resize = function(state: State, cols: number, _rows: number, _cx: BlockCx)
+		state.cols = cols
 	end,
 
 	view = function(state: State, cx: BlockCx): BlockView
@@ -986,6 +1072,13 @@ tern.block.define("board", {
 	end,
 
 	event = function(state: State, event: UiEvent, cx: BlockCx)
+		if event.ev == "action" and event.act == "viewport" then
+			local cols = tonumber(tostring(event.value))
+			if cols and cols > 0 then
+				state.cols = cols
+			end
+			return
+		end
 		if event.ev == "action" then
 			local act = tostring(event.act or "")
 			if state.focus == "filter" and act ~= "clear" then

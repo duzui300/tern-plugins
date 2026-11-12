@@ -7,6 +7,48 @@ local function join(directory: string, name: string): string
 	return directory .. separator .. name
 end
 
+local last: { [number]: string } = {}
+
+local function find_size(node: any): string?
+	if type(node) ~= "table" then
+		return nil
+	end
+	local value = node.value
+	if type(value) == "string" then
+		local width, _height = string.match(value, "^(%d+)×(%d+)$")
+		if width then
+			return width
+		end
+	end
+	for _, child in ipairs(node.children or {}) do
+		local found = find_size(child)
+		if found then
+			return found
+		end
+	end
+	return nil
+end
+
+local function sync(cx: WindowCx)
+	for _, pane in cx.session:panes() do
+		if pane.block == "flowboard.board" then
+			local ok, view = pcall(function()
+				return cx.session:view(pane.pane, { nodes = 50, depth = 3 })
+			end)
+			if ok and type(view) ~= "string" then
+				local width = find_size(view)
+				if width and last[pane.pane] ~= width then
+					last[pane.pane] = width
+					cx.session:event(pane.pane, { ev = "action", act = "viewport", value = width })
+				end
+			end
+		end
+	end
+	tern.timer(500, sync)
+end
+
+tern.timer(500, sync)
+
 local function looks_like_board(path: string): boolean
 	local ok, text = pcall(tern.fs.read, path)
 	if not ok then

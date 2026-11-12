@@ -1,12 +1,16 @@
 /* Flow Board: the native board's toolbar and lanes, with lanes that wrap. */
 [data-surface='plugin.flowboard.board'] {
 	&.sf-main {
-		overflow: auto;
+		background: rgb(from var(--panel) r g b / 1);
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
 		padding: 10px 12px;
 	}
 
 	.fb-root {
 		display: flex;
+		flex: 1 1 0;
 		flex-direction: column;
 		gap: 10px;
 		min-height: 0;
@@ -17,7 +21,7 @@
 		display: flex;
 		flex-wrap: wrap;
 		gap: 8px;
-		min-height: 26px;
+		min-height: 34px;
 	}
 
 	.fb-title {
@@ -29,7 +33,7 @@
 
 	.fb-path {
 		display: inline-block;
-		max-width: 220px;
+		max-width: 420px;
 		vertical-align: bottom;
 	}
 
@@ -52,11 +56,32 @@
 	}
 
 	.fb-filter {
-		width: 120px;
+		width: 122px;
 	}
 
 	.fb-filter .sf-input {
 		width: 100%;
+	}
+
+	.fb-cols {
+		align-items: stretch;
+		display: flex;
+		flex: 1 1 0;
+		flex-wrap: wrap;
+		gap: 12px;
+		min-height: 0;
+		overflow: hidden;
+	}
+
+	.fb-col {
+		display: flex;
+		flex: 0 0 272px;
+		flex-direction: column;
+		gap: 12px;
+		height: 100%;
+		max-height: 100%;
+		min-width: 0;
+		overflow-y: auto;
 	}
 
 	.fb-lanes {
@@ -68,15 +93,14 @@
 	}
 
 	.fb-lane {
-		background: var(--l1);
-		border: 1px solid var(--l2);
+		background: rgb(from var(--ink) r g b / 3.5%);
+		border: 0;
 		border-radius: 8px;
 		display: flex;
-		flex: 0 1 272px;
+		flex: none;
 		flex-direction: column;
-		max-height: 60vh;
-		min-width: 200px;
 		overflow: hidden;
+		width: 100%;
 	}
 
 	.fb-list .fb-lane {
@@ -89,7 +113,7 @@
 		display: flex;
 		gap: 6px;
 		min-height: 36px;
-		padding: 0 8px;
+		padding: 0 8px 0 12px;
 	}
 
 	.fb-lane-title {
@@ -110,8 +134,8 @@
 		flex-direction: column;
 		gap: 0;
 		min-height: 0;
-		overflow: auto;
-		padding: 0 4px 4px;
+		overflow: visible;
+		padding: 0 8px 8px;
 	}
 
 	.fb-lane.fb-folded .fb-lane-body {
@@ -120,21 +144,30 @@
 
 	.fb-card {
 		align-items: center;
+		background: rgb(from var(--panel) r g b / 1);
 		border-radius: 6px;
 		cursor: default;
-		display: flex;
+		display: grid;
+		grid-template-columns: 16px minmax(0, 1fr);
 		gap: 8px;
 		min-height: 34px;
-		padding: 0 6px;
+		padding: 7px 8px;
 	}
 
 	.fb-card:hover {
-		background: var(--l2);
+		background: rgb(from var(--panel) r g b / 1);
+		box-shadow: inset 0 0 0 1px var(--l2);
 	}
 
 	.fb-card.fb-selected {
-		background: var(--l1);
 		box-shadow: inset 0 0 0 1px var(--accent);
+	}
+
+	.fb-card [role='checkbox'] {
+		border-radius: 999px;
+		flex: none;
+		height: 16px;
+		width: 16px;
 	}
 
 	.fb-card.fb-done .sf-text {
@@ -147,8 +180,22 @@
 	}
 
 	.fb-card-text {
-		flex: 1 1 auto;
 		min-width: 0;
+		overflow: hidden;
+	}
+
+	.fb-card-title {
+		color: var(--t1);
+		font-size: 16.6px;
+		line-height: 1.1;
+		max-width: 100%;
+		white-space: normal;
+		overflow-wrap: anywhere;
+	}
+
+	.fb-card.fb-done .fb-card-title {
+		color: var(--t3);
+		text-decoration: line-through;
 	}
 
 	.fb-editor {
@@ -158,13 +205,13 @@
 	.fb-add {
 		align-items: center;
 		background: transparent;
-		border: 1px dashed var(--l2);
+		border: 1px dashed var(--l3);
 		border-radius: 8px;
 		display: flex;
-		flex: 0 1 272px;
+		flex: 0 0 272px;
 		justify-content: center;
 		min-height: 60px;
-		min-width: 200px;
+		width: 100%;
 	}
 
 	.fb-error {
