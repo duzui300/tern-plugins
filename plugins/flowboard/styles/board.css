@@ -132,7 +132,7 @@
 	.fb-lane-body {
 		display: flex;
 		flex-direction: column;
-		gap: 0;
+		gap: 4px;
 		min-height: 0;
 		overflow: visible;
 		padding: 0 8px 8px;

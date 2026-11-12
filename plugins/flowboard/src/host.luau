@@ -564,7 +564,7 @@ local function estimated(lane: Lane): number
 	local height = 4.5 + 2.75 + 1
 	for _, card in ipairs(lane.cards) do
 		local lines = math.max(1, math.ceil(#card.text / 32))
-		height += 4.25 + (lines - 1) * 2.3
+		height += 4.25 + (lines - 1) * 2.3 + 0.5
 	end
 	return height
 end
