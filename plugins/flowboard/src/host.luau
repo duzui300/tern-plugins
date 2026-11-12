@@ -492,6 +492,7 @@ local function lane_view(state: State, lane_index: number, lane: Lane): Node?
 	head[#head + 1] = with(ui.button("", {
 		icon = "plus",
 		size = "sm",
+		variant = "quiet",
 		title = "New card at the top",
 	}), { actions = { click = "new_card_top:" .. lane_index } })
 	head[#head + 1] = ui.node("menu", {

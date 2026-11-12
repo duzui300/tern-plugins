@@ -75,7 +75,7 @@
 
 	.fb-col {
 		display: flex;
-		flex: 0 0 272px;
+		flex: 1 1 272px;
 		flex-direction: column;
 		gap: 12px;
 		height: 100%;
@@ -117,7 +117,7 @@
 	}
 
 	.fb-lane-title {
-		flex: 1 1 auto;
+		flex: 0 1 auto;
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -127,6 +127,22 @@
 	.fb-lane-count {
 		color: var(--t3);
 		flex: none;
+	}
+
+	.fb-lane-head .sf-button {
+		background: transparent;
+		border: 0;
+	}
+
+	.fb-lane-head .sf-menu-trigger {
+		align-items: center;
+		display: flex;
+		justify-content: center;
+		padding: 0;
+	}
+
+	.fb-lane-head .sf-menu-trigger .sf-btn-ic {
+		margin: 0;
 	}
 
 	.fb-lane-body {
@@ -186,8 +202,8 @@
 
 	.fb-card-title {
 		color: var(--t1);
-		font-size: 16.6px;
-		line-height: 1.1;
+		font-size: 13px;
+		line-height: 1.4;
 		max-width: 100%;
 		white-space: normal;
 		overflow-wrap: anywhere;
@@ -208,7 +224,7 @@
 		border: 1px dashed var(--l3);
 		border-radius: 8px;
 		display: flex;
-		flex: 0 0 272px;
+		flex: 0 0 auto;
 		justify-content: center;
 		min-height: 60px;
 		width: 100%;
