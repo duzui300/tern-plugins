@@ -3,6 +3,7 @@
 local ui = tern.ui
 
 type Card = {
+	id: number,
 	text: string,
 	done: boolean,
 	raw: string?,
@@ -118,6 +119,18 @@ local function next16(text: string, cursor: number): number
 	return if after == at then math.min(utf16_len(text), cursor + 2) else math.min(utf16_len(text), cursor + 1)
 end
 
+local last_card_id = 0
+
+
+local function new_card_id(): number
+
+	last_card_id += 1
+
+	return last_card_id
+
+end
+
+
 local function parse(text: string): { Lane }
 	local lanes: { Lane } = {}
 	local lane: Lane? = nil
@@ -131,6 +144,7 @@ local function parse(text: string): { Lane }
 			local check, body = line:match("^%-%s+%[([ xX])%]%s+(.*)$")
 			if check then
 				table.insert(lane.cards, {
+					id = new_card_id(),
 					text = body,
 					done = check ~= " ",
 					raw = line,
@@ -355,7 +369,7 @@ local function commit_editor(state: State)
 			end
 		else
 			local at = math.max(1, math.min(#lane.cards + 1, editing.at or (#lane.cards + 1)))
-			table.insert(lane.cards, at, { text = text, done = false, raw = nil })
+			table.insert(lane.cards, at, { id = new_card_id(), text = text, done = false, raw = nil })
 			state.selected = { lane = editing.lane, card = at }
 		end
 	else
@@ -411,7 +425,13 @@ end
 local function card_row(state: State, lane_index: number, card_index: number, card: Card): Node
 	local selected = state.selected
 	local is_selected = selected ~= nil and selected.lane == lane_index and selected.card == card_index
+	local id = card.id
+	if id == nil then
+		id = new_card_id()
+		card.id = id
+	end
 	return ui.el("div", {
+		key = "card:" .. id,
 		class = "fb-card"
 			.. (if card.done then " fb-done" else "")
 			.. (if is_selected then " fb-selected" else ""),
@@ -420,7 +440,7 @@ local function card_row(state: State, lane_index: number, card_index: number, ca
 	}, {
 		ui.el("input", {
 			type = "checkbox",
-			name = "toggle:" .. lane_index .. ":" .. card_index,
+			name = "toggle:" .. id,
 			checked = card.done,
 		}),
 		ui.el("div", {
@@ -1159,9 +1179,17 @@ tern.block.define("board", {
 			return
 		end
 		if event.ev == "change" then
-			local lane_index, card_index = tostring(event.name or ""):match("^toggle:(%d+):(%d+)$")
-			if lane_index then
-				toggle_card(state, tonumber(lane_index), tonumber(card_index), event.checked == true)
+			local card_id = tostring(event.name or ""):match("^toggle:(%d+)$")
+			if card_id then
+				local id = tonumber(card_id)
+				for lane_index, lane in ipairs(state.lanes) do
+					for card_index, card in ipairs(lane.cards) do
+						if card.id == id then
+							toggle_card(state, lane_index, card_index, event.checked == true)
+							return
+						end
+					end
+				end
 			end
 			return
 		end
