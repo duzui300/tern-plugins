@@ -411,11 +411,18 @@ local function card_menu(state: State, lane_index: number, card_index: number): 
 	local moves: { any } = {}
 	for index, lane in ipairs(state.lanes) do
 		if index ~= lane_index then
-			moves[#moves + 1] = { id = "move_card:" .. lane_index .. ":" .. card_index .. ":" .. index, label = lane.title }
+			moves[#moves + 1] = {
+				id = "move_card:" .. lane_index .. ":" .. card_index .. ":" .. index,
+				label = "Move to " .. lane.title,
+				icon = if lane.done then "check" else "arrow-right",
+			}
 		end
 	end
 	if #moves > 0 then
-		items[#items + 1] = { label = "Move to lane", icon = "arrow-right", items = moves }
+		items[#items + 1] = "-"
+		for _, move in moves do
+			items[#items + 1] = move
+		end
 	end
 	items[#items + 1] = "-"
 	items[#items + 1] = { id = "delete_card:" .. lane_index .. ":" .. card_index, label = "Delete card", icon = "trash", danger = true }
