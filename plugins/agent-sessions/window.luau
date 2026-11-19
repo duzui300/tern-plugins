@@ -14,6 +14,8 @@ local S = {
 	group = "agent",
 	detail = nil,
 	transcript = nil,
+	selecting = false,
+	selected = {},
 	loading = false,
 	pane = nil,
 	scanning = false,
@@ -164,6 +166,29 @@ local function action_button(icon, label, act)
 	return ui.button(nil, { icon = icon, title = label, size = "sm", actions = { click = act } })
 end
 
+local function selected_count()
+	local n = 0
+	for _ in pairs(S.selected) do n = n + 1 end
+	return n
+end
+
+local function clear_selection()
+	S.selected = {}
+end
+
+local function select_box(s)
+	local k = key_of(s)
+	local on = S.selected[k] == true
+	return ui.button(nil, {
+		icon = on and "check" or "box",
+		title = on and "Deselect" or "Select",
+		size = "sm",
+		variant = "quiet",
+		on = on,
+		actions = { click = "mark:" .. k },
+	})
+end
+
 local function with_props(node, props)
 	node.p = node.p or {}
 	for k, v in pairs(props) do
@@ -227,20 +252,46 @@ local function session_actions(s)
 end
 
 local function session_row(s)
-	return ui.node("row", { key = key_of(s), gap = "sm", align = "start" }, {
-		ui.node("icon", { name = agent_icon(s.agent) }),
-		ui.node("col", { gap = "xs", grow = 1, shrink = 1, min = { w = 0 } }, {
-			with_props(ui.text(short_title(label_of(s))), {
-				title = label_of(s),
-				actions = { click = "select:" .. key_of(s) },
-			}),
-			meta_row(s),
+	local k = key_of(s)
+	local kids = {}
+	if S.selecting then
+		kids[#kids + 1] = select_box(s)
+	end
+	kids[#kids + 1] = ui.node("icon", { name = agent_icon(s.agent) })
+	kids[#kids + 1] = ui.node("col", { gap = "xs", grow = 1, shrink = 1, min = { w = 0 } }, {
+		with_props(ui.text(short_title(label_of(s))), {
+			title = label_of(s),
+			actions = { click = (S.selecting and "mark:" or "select:") .. k },
 		}),
-		ui.node("row", { gap = "xs", shrink = 0, basis = "content" }, session_actions(s)),
+		meta_row(s),
 	})
+	if not S.selecting then
+		kids[#kids + 1] = ui.node("row", { gap = "xs", shrink = 0, basis = "content" }, session_actions(s))
+	end
+	return ui.node("row", { key = k, gap = "sm", align = "start" }, kids)
 end
 
 local function toolbar(all_open)
+	if S.selecting then
+		local chosen = selected_count()
+		local total = 0
+		for _, s in ipairs(S.rows) do
+			if matches(s) then total = total + 1 end
+		end
+		local all = total > 0 and chosen >= total
+		local nodes = {
+			ui.button("Done", { size = "sm", variant = "quiet", icon = "x", actions = { click = "select-mode" } }),
+			ui.button(all and "Clear all" or "Select all", { size = "sm", icon = "list-checks", actions = { click = "select-all" } }),
+		}
+		if chosen > 0 then
+			nodes[#nodes + 1] = ui.text({ ui.span(tostring(chosen) .. " selected", "accent") })
+		end
+		nodes[#nodes + 1] = ui.button("Delete selected…", {
+			size = "sm", variant = "danger", icon = "trash",
+			disabled = chosen == 0, actions = { click = "delete-selected" },
+		})
+		return ui.node("row", { gap = "sm", wrap = true }, nodes)
+	end
 	return ui.node("row", { gap = "sm", wrap = true }, {
 		action_button("folder", "Filter by folder", "pick:folder"),
 		action_button("tag", "Filter by tag", "pick:tag"),
@@ -249,6 +300,7 @@ local function toolbar(all_open)
 		action_button(all_open and "shrink" or "expand", all_open and "Collapse all" or "Expand all", "toggle-all"),
 		action_button(S.show_hidden and "eye" or "eye-off", "Show hidden sessions", "toggle-hidden"),
 		action_button("repeat", "Rescan", "rescan"),
+		action_button("list-checks", "Select sessions", "select-mode"),
 	})
 end
 
@@ -275,9 +327,14 @@ local function build_list()
 
 	local hidden_count = 0
 	for _ in pairs(S.hidden) do hidden_count = hidden_count + 1 end
-	local status = { ui.span(tostring(#items), "strong num"), ui.span(" sessions", "muted") }
-	if hidden_count > 0 and not S.show_hidden then
-		status[#status + 1] = ui.span("  ·  " .. hidden_count .. " hidden", "muted")
+	local status
+	if S.selecting then
+		status = { ui.span(tostring(selected_count()), "strong num"), ui.span(" selected  ·  " .. tostring(#items) .. " shown", "muted") }
+	else
+		status = { ui.span(tostring(#items), "strong num"), ui.span(" sessions", "muted") }
+		if hidden_count > 0 and not S.show_hidden then
+			status[#status + 1] = ui.span("  ·  " .. hidden_count .. " hidden", "muted")
+		end
 	end
 	local any_open = false
 	for _, g in ipairs(order) do
@@ -649,34 +706,91 @@ local function restore_session(cx, s)
 	render(cx)
 end
 
+local function delete_one(cx, s, cb)
+	local started, why = run_node({ "delete.js", "--agent", s.agent, "--id", s.id, "--path", s.path or "" }, 30000, function(r, cx3)
+		local ok, errors = false, {}
+		if r.status == 0 then
+			local okj, parsed = pcall(tern.json.decode, r.stdout)
+			if okj and parsed and parsed.ok then
+				ok = true
+			elseif okj and parsed and parsed.errors then
+				errors = parsed.errors
+			else
+				errors = { (r.stderr or "delete failed"):sub(1, 200) }
+			end
+		else
+			errors = { (r.stderr or ""):sub(1, 200) }
+		end
+		if ok then
+			remove_row(s)
+			run_node({ "tags.js", "set", s.agent, s.id, "", "[]" }, 10000, function() end)
+			run_node({ "tags.js", "unhide", s.agent, s.id }, 10000, function() end)
+			render(cx3)
+		end
+		cb(ok, errors, cx3)
+	end)
+	if not started then
+		cb(false, { tostring(why) }, cx)
+	end
+end
+
 local function confirm_delete(cx, s)
 	cx:pick({ items = {
 		{ label = "Delete permanently", detail = "id " .. s.id },
 		{ label = "Cancel" },
 	} }):next(function(item, err, cx2)
 		if not item or item.label ~= "Delete permanently" then return end
-		run_node({ "delete.js", "--agent", s.agent, "--id", s.id, "--path", s.path or "" }, 30000, function(r, cx3)
-			local ok, res, errors = false, nil, {}
-			if r.status == 0 then
-				local okj, parsed = pcall(tern.json.decode, r.stdout)
-				if okj and parsed and parsed.ok then
-					ok = true
-				elseif okj and parsed and parsed.errors then
-					errors = parsed.errors
-				end
-			else
-				errors = { (r.stderr or ""):sub(1, 200) }
-			end
+		delete_one(cx2, s, function(ok, errors, cx3)
+			local c = cx3 or cx2
 			if ok then
-				remove_row(s)
-				run_node({ "tags.js", "set", s.agent, s.id, "", "[]" }, 10000, function() end)
-				run_node({ "tags.js", "unhide", s.agent, s.id }, 10000, function() end)
-				render(cx3)
-				cx3:toast("success", "Session deleted", s.id)
+				c:toast("success", "Session deleted", s.id)
 			else
-				cx3:toast("error", "Could not delete session", table.concat(errors, "; "):sub(1, 240))
+				c:toast("error", "Could not delete session", table.concat(errors, "; "):sub(1, 240))
 			end
+			render(c)
 		end)
+	end)
+end
+
+local function delete_selected(cx)
+	local keys = {}
+	for k in pairs(S.selected) do
+		if find_session(k) then keys[#keys + 1] = k end
+	end
+	table.sort(keys)
+	if #keys == 0 then return end
+	cx:pick({ items = {
+		{ label = "Delete " .. tostring(#keys) .. (#keys == 1 and " session" or " sessions") .. " permanently", detail = "cannot be undone" },
+		{ label = "Cancel" },
+	} }):next(function(item, err, cx2)
+		if not item or item.label:sub(1, 6) ~= "Delete" then return end
+		local deleted, failed, index = 0, {}, 1
+		local function step(cx3)
+			while index <= #keys do
+				local s = find_session(keys[index])
+				index = index + 1
+				if s then
+					delete_one(cx3, s, function(ok, errors, cx4)
+						if ok then
+							deleted = deleted + 1
+						else
+							failed[#failed + 1] = s.id .. ": " .. table.concat(errors, "; "):sub(1, 120)
+						end
+						step(cx4 or cx3)
+					end)
+					return
+				end
+			end
+			S.selecting = false
+			S.selected = {}
+			render(cx3)
+			if #failed > 0 then
+				cx3:toast("error", "Deleted " .. deleted .. " of " .. (deleted + #failed) .. " sessions", table.concat(failed, "; "):sub(1, 240))
+			else
+				cx3:toast("success", "Deleted " .. deleted .. (deleted == 1 and " session" or " sessions"))
+			end
+		end
+		step(cx2)
 	end)
 end
 
@@ -754,6 +868,30 @@ tern.on("canvas_action", function(ev, cx)
 		end
 		render(cx)
 		return true
+	elseif act == "select-mode" then
+		S.selecting = not S.selecting
+		clear_selection()
+		render(cx)
+		return true
+	elseif act == "select-all" then
+		local any, all = false, true
+		for _, s in ipairs(S.rows) do
+			if matches(s) then
+				any = true
+				if not S.selected[key_of(s)] then all = false; break end
+			end
+		end
+		local target = not (any and all)
+		for _, s in ipairs(S.rows) do
+			if matches(s) then
+				S.selected[key_of(s)] = target or nil
+			end
+		end
+		render(cx)
+		return true
+	elseif act == "delete-selected" then
+		delete_selected(cx)
+		return true
 	end
 
 	if act:sub(1, 6) == "group:" then
@@ -769,6 +907,15 @@ tern.on("canvas_action", function(ev, cx)
 		if not s then return false end
 		if op == "select" then
 			open_detail(cx, s)
+			return true
+		elseif op == "mark" then
+			local k = key_of(s)
+			if S.selected[k] then
+				S.selected[k] = nil
+			else
+				S.selected[k] = true
+			end
+			render(cx)
 			return true
 		elseif op == "resume" then
 			resume(cx, s)

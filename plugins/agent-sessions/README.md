@@ -18,7 +18,8 @@ Claude Code, Antigravity, Pi, omp and Carly each keep conversations in their own
 - Resume in a new Tern tab with the agent's own command, or copy the command; Claude Code and Antigravity resume with `--dangerously-skip-permissions` and omp with `--approval-mode=yolo`, so a resumed session does not stop at permission prompts.
 - Carly transcripts are read-only here: search, rename, tag, read and delete them; Copy puts the JSONL path on the clipboard so another agent can continue the conversation.
 - Aliases and tags live in the plugin's own SQLite database. Session files are never written.
-- Hide noisy sessions, or delete a session from disk behind a two-step confirmation.
+- Hide noisy sessions, or delete one session from disk behind a two-step confirmation.
+- Select several sessions and delete them together, with the same permanent-delete confirmation.
 - Responsive layout: rows wrap and the action column stays aligned when the pane narrows.
 
 ## Where sessions come from
@@ -55,6 +56,7 @@ Run **Agent sessions** from the palette (`plugin.agent-sessions.open`).
 - **Toolbar**: filter by folder or tag, search, switch grouping (agent, folder, tag), expand/collapse all, show hidden sessions, rescan.
 - **Groups**: collapsed by default. Click a group header to expand or collapse it; the badge counts its sessions.
 - **Rows**: click a title to read the transcript. The icon buttons resume, copy the resume command, rename, edit tags, or hide/delete; Carly rows drop Resume, and their Copy button copies the transcript path instead of a command.
+- **Select**: the toolbar's **Select** button enters batch mode; each row gets a checkbox, clicking a title toggles it, and **Select all** picks every session in the current view. **Delete selected…** asks once more, then removes those sessions from disk.
 - **Detail**: Back, Resume, Copy, Rename, Tags; the transcript renders as Markdown. Carly transcripts show a read-only note and a Copy path button.
 
 ### Aliases and tags
@@ -67,7 +69,7 @@ Stored in `<Tern state>/plugin-data/agent-sessions/tags.db`, keyed by `agent` an
 ### Hide and delete
 
 - **Hide from this list** keeps the files. The eye button shows hidden sessions again, where they can be restored.
-- **Delete from disk...** asks once more, then removes the agent's files for that session: the JSONL and its companion directory for Claude/omp/Carly, the JSONL for Pi, or the conversation database, brain folder and summary rows for Antigravity. This cannot be undone, and the agent must not be using the session.
+- **Delete from disk...** asks once more, then removes the agent's files for that session: the JSONL and its companion directory for Claude/omp/Carly, the JSONL for Pi, or the conversation database, brain folder and summary rows for Antigravity. This cannot be undone, and the agent must not be using the session. In batch mode the same confirmation names the count and deletes each selected session in turn, reporting a partial failure rather than hiding it.
 
 ## How it works
 
