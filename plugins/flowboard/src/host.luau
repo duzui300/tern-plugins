@@ -7,12 +7,16 @@ type Card = {
 	text: string,
 	done: boolean,
 	raw: string?,
+	home: number?,
 }
 
 type Lane = {
+	id: number,
 	title: string,
 	done: boolean,
 	cards: { Card },
+	extras: { [number]: { string } },
+	heading_raw: string?,
 }
 
 type Editing = {
@@ -22,11 +26,25 @@ type Editing = {
 	at: number?,
 	text: string,
 	cursor: number,
+	new_lane: boolean?,
+	base_text: string?,
+}
+
+type Doc = {
+	lanes: { Lane },
+	preamble: { string },
+	newline: string,
+	final_newline: boolean,
 }
 
 type State = {
 	path: string,
 	lanes: { Lane },
+	preamble: { string },
+	newline: string,
+	final_newline: boolean,
+	disk_text: string?,
+	conflict: boolean,
 	cols: number,
 	filter: string,
 	filter_cursor: number,
@@ -36,10 +54,13 @@ type State = {
 	editing: Editing?,
 	focus: string?,
 	selected: { lane: number, card: number }?,
+	pending_delete_lane: number?,
 	undo: { string },
 	redo: { string },
 	error: string?,
 }
+
+local DONE_MARKER = "<!-- flowboard:done -->"
 
 local function with(node: Node, props: { [string]: any }): Node
 	local merged: { [string]: any } = node.p or {}
@@ -120,49 +141,143 @@ local function next16(text: string, cursor: number): number
 end
 
 local last_card_id = 0
-
+local last_lane_id = 0
 
 local function new_card_id(): number
-
 	last_card_id += 1
-
 	return last_card_id
+end
 
+local function new_lane_id(): number
+	last_lane_id += 1
+	return last_lane_id
 end
 
 
-local function parse(text: string): { Lane }
-	local lanes: { Lane } = {}
+local function split_lines(text: string): { string }
+	local lines: { string } = {}
+	if text == "" then
+		return lines
+	end
+	local pos = 1
+	while pos <= #text do
+		local nl = text:find("\n", pos, true)
+		if nl then
+			table.insert(lines, text:sub(pos, nl - 1))
+			pos = nl + 1
+		else
+			table.insert(lines, text:sub(pos))
+			break
+		end
+	end
+	return lines
+end
+
+local function fence_mark(line: string): string?
+	local ticks = line:match("^%s*(```+)")
+	if ticks then
+		return ticks:sub(1, 3)
+	end
+	local tildes = line:match("^%s*(~~~+)")
+	if tildes then
+		return tildes:sub(1, 3)
+	end
+	return nil
+end
+
+local function parse(text: string): Doc
+	local newline = if text:find("\r\n", 1, true) then "\r\n" else "\n"
+	local normalized = text:gsub("\r\n", "\n")
+	local doc: Doc = {
+		lanes = {},
+		preamble = {},
+		newline = newline,
+		final_newline = normalized == "" or normalized:sub(-1) == "\n",
+	}
 	local lane: Lane? = nil
-	for line in (text .. "\n"):gmatch("(.-)\n") do
-		line = line:gsub("\r$", "")
-		local title = line:match("^##%s+(.-)%s*$")
-		if title then
-			lane = { title = title, done = title:lower() == "done", cards = {} }
-			table.insert(lanes, lane)
-		elseif lane then
-			local check, body = line:match("^%-%s+%[([ xX])%]%s+(.*)$")
-			if check then
-				table.insert(lane.cards, {
-					id = new_card_id(),
-					text = body,
-					done = check ~= " ",
-					raw = line,
-				})
+	local card_index = 0
+	local fence: string? = nil
+	local function add_raw(line: string)
+		if lane then
+			local bucket = lane.extras[card_index]
+			if bucket == nil then
+				bucket = {}
+				lane.extras[card_index] = bucket
+			end
+			table.insert(bucket, line)
+		else
+			table.insert(doc.preamble, line)
+		end
+	end
+	for _, line in ipairs(split_lines(normalized)) do
+		local mark = fence_mark(line)
+		if fence then
+			add_raw(line)
+			if mark == fence then
+				fence = nil
+			end
+		elseif mark then
+			add_raw(line)
+			fence = mark
+		else
+			local title = line:match("^##%s+(.-)%s*$")
+			if title then
+				lane = {
+					id = new_lane_id(),
+					title = title,
+					done = title:lower() == "done",
+					cards = {},
+					extras = { [0] = {} },
+					heading_raw = line,
+				}
+				table.insert(doc.lanes, lane)
+				card_index = 0
+			elseif lane then
+				local check, body = line:match("^%-%s+%[([ xX])%]%s+(.*)$")
+				if check then
+					table.insert(lane.cards, {
+						id = new_card_id(),
+						text = body,
+						done = check ~= " ",
+						raw = line,
+					})
+					card_index = #lane.cards
+					lane.extras[card_index] = {}
+				elseif trim(line) == DONE_MARKER then
+					lane.done = true
+				else
+					add_raw(line)
+				end
+			else
+				add_raw(line)
 			end
 		end
 	end
-	return lanes
+	return doc
 end
 
-local function serialize(lanes: { Lane }): string
+local function serialize(state: State): string
 	local out: { string } = {}
-	for index, lane in ipairs(lanes) do
-		if index > 1 then
-			table.insert(out, "")
+	local function emit(line: string)
+		table.insert(out, line)
+	end
+	for _, line in ipairs(state.preamble) do
+		emit(line)
+	end
+	for index, lane in ipairs(state.lanes) do
+		emit(lane.heading_raw or ("## " .. (if lane.title == "" then "Untitled" else lane.title)))
+		if lane.done and lane.title:lower() ~= "done" then
+			emit(DONE_MARKER)
 		end
-		table.insert(out, "## " .. (if lane.title == "" then "Untitled" else lane.title))
-		for _, card in ipairs(lane.cards) do
+		local function emit_extras(anchor: number)
+			for _, line in ipairs(lane.extras[anchor] or {}) do
+				if trim(line) ~= DONE_MARKER then
+					emit(line)
+				end
+			end
+		end
+		emit_extras(0)
+		for card_index, card in ipairs(lane.cards) do
 			local line = card.raw
 			if line == nil or line == "" then
 				line = "- [" .. (if card.done then "x" else " ") .. "] " .. card.text
@@ -170,27 +285,70 @@ local function serialize(lanes: { Lane }): string
 				line = line:gsub("%[([ xX])%]", if card.done then "[x]" else "[ ]", 1)
 			end
 			card.raw = line
-			table.insert(out, line)
+			emit(line)
+			emit_extras(card_index)
+		end
+		if index < #state.lanes then
+			if out[#out] ~= "" then
+				emit("")
+			end
 		end
 	end
-	return table.concat(out, "\n") .. "\n"
+	if #out == 0 then
+		return ""
+	end
+	local text = table.concat(out, state.newline)
+	if state.final_newline then
+		text = text .. state.newline
+	end
+	return text
 end
 
-local function read_board(path: string): ({ Lane }, string?)
+local function read_board(path: string): (Doc?, string?, string?)
 	local ok, text = pcall(tern.fs.read, path)
 	if not ok then
-		return {}, tostring(text)
+		return nil, nil, tostring(text)
 	end
-	return parse(text), nil
+	return parse(text), text, nil
 end
 
-local function write_board(state: State)
-	local ok, message = pcall(tern.fs.write, state.path, serialize(state.lanes))
+local function apply_doc(state: State, doc: Doc, text: string)
+	state.lanes = doc.lanes
+	state.preamble = doc.preamble
+	state.newline = doc.newline
+	state.final_newline = doc.final_newline
+	state.disk_text = text
+end
+
+local function write_board(state: State, force: boolean?): boolean
+	local text = serialize(state)
+	local ok, current = pcall(tern.fs.read, state.path)
 	if not ok then
-		state.error = tostring(message)
-	else
-		state.error = nil
+		if state.disk_text ~= nil and not force then
+			state.conflict = true
+			state.error = "The board file is missing or unreadable. Reload from disk, or overwrite it."
+			return false
+		end
+	elseif state.disk_text ~= nil and current ~= state.disk_text and not force then
+		state.conflict = true
+		state.error = "The file changed on disk. Reload from disk, or use Overwrite file on disk."
+		return false
 	end
+	if ok and current == text then
+		state.disk_text = current
+		state.conflict = false
+		state.error = nil
+		return true
+	end
+	local wrote, message = pcall(tern.fs.write, state.path, text)
+	if not wrote then
+		state.error = tostring(message)
+		return false
+	end
+	state.disk_text = text
+	state.conflict = false
+	state.error = nil
+	return true
 end
 
 local function counts(lanes: { Lane }): (number, number)
@@ -207,6 +365,70 @@ local function counts(lanes: { Lane }): (number, number)
 	return open, done
 end
 
+local LANE_CELLS = 34
+
+local function estimated(lane: Lane, state: State): number
+	local height = 4.5 + 2.75 + 1
+	local query = state.filter:lower()
+	for _, card in ipairs(lane.cards) do
+		if not (state.hide_done and card.done) and (query == "" or card.text:lower():find(query, 1, true) ~= nil) then
+			local chars = utf8.len(card.text) or #card.text
+			local lines = math.max(1, math.ceil(chars / 32))
+			height += 4.25 + (lines - 1) * 2.3 + 0.5
+		end
+	end
+	return height
+end
+
+local function packed_columns(state: State, lanes: { Lane }, cols: number): { { Lane } }
+	local count = math.max(1, math.min(#lanes, math.floor(math.max(LANE_CELLS, cols) / LANE_CELLS)))
+	if count <= 1 or #lanes == 0 then
+		return { lanes }
+	end
+	local prefix: { number } = { 0 }
+	for index, lane in ipairs(lanes) do
+		prefix[index + 1] = prefix[index] + estimated(lane, state)
+	end
+	local dp: { { number } } = {}
+	local cut: { { number } } = {}
+	for column = 1, count do
+		dp[column] = {}
+		cut[column] = {}
+	end
+	for index = 1, #lanes do
+		dp[1][index] = prefix[index + 1]
+	end
+	for column = 2, count do
+		for index = 1, #lanes do
+			dp[column][index] = math.huge
+			for split = column - 1, index - 1 do
+				local cost = math.max(dp[column - 1][split], prefix[index + 1] - prefix[split + 1])
+				if cost < dp[column][index] then
+					dp[column][index] = cost
+					cut[column][index] = split
+				end
+			end
+		end
+	end
+	local groups: { { Lane } } = {}
+	local index = #lanes
+	for column = count, 2, -1 do
+		local split = cut[column][index]
+		local group: { Lane } = {}
+		for lane_index = split + 1, index do
+			table.insert(group, lanes[lane_index])
+		end
+		table.insert(groups, 1, group)
+		index = split
+	end
+	local first: { Lane } = {}
+	for lane_index = 1, index do
+		table.insert(first, lanes[lane_index])
+	end
+	table.insert(groups, 1, first)
+	return groups
+end
+
 local function done_lane(state: State): number
 	for index, lane in ipairs(state.lanes) do
 		if lane.done then
@@ -219,41 +441,130 @@ local function done_lane(state: State): number
 			return index
 		end
 	end
-	table.insert(state.lanes, { title = "Done", done = true, cards = {} })
+	table.insert(state.lanes, {
+		id = new_lane_id(),
+		title = "Done",
+		done = true,
+		cards = {},
+		extras = { [0] = {} },
+		heading_raw = nil,
+	})
 	return #state.lanes
 end
 
-local function remember(state: State)
-	table.insert(state.undo, serialize(state.lanes))
+local function push_undo(state: State, text: string)
+	table.insert(state.undo, text)
 	if #state.undo > 60 then
 		table.remove(state.undo, 1)
 	end
 	state.redo = {}
 end
 
-local function undo(state: State)
+local function remember(state: State)
+	push_undo(state, serialize(state))
+end
+
+local function restore_text(state: State, text: string)
+	local doc = parse(text)
+	state.lanes = doc.lanes
+	state.preamble = doc.preamble
+	state.newline = doc.newline
+	state.final_newline = doc.final_newline
+	state.selected = nil
+	state.editing = nil
+	state.pending_delete_lane = nil
+end
+
+local function undo(state: State, cx: BlockCx?)
 	if #state.undo == 0 then
 		return
 	end
-	table.insert(state.redo, serialize(state.lanes))
+	local clear_focus = state.focus == "editor"
+	table.insert(state.redo, serialize(state))
 	local text = table.remove(state.undo) or ""
-	state.lanes = parse(text)
-	state.selected = nil
-	state.editing = nil
+	restore_text(state, text)
+	if clear_focus then
+		state.focus = nil
+		if cx then cx:frame({ { "focus", nil } }) end
+	end
 	write_board(state)
 end
 
-local function redo(state: State)
+local function redo(state: State, cx: BlockCx?)
 	if #state.redo == 0 then
 		return
 	end
-	table.insert(state.undo, serialize(state.lanes))
+	local clear_focus = state.focus == "editor"
+	table.insert(state.undo, serialize(state))
 	local text = table.remove(state.redo) or ""
-	state.lanes = parse(text)
-	state.selected = nil
-	state.editing = nil
+	restore_text(state, text)
+	if clear_focus then
+		state.focus = nil
+		if cx then cx:frame({ { "focus", nil } }) end
+	end
 	write_board(state)
 end
+
+local function take_card(lane: Lane, index: number): (Card, { string })
+	local card = lane.cards[index]
+	local notes = lane.extras[index] or {}
+	local count = #lane.cards
+	table.remove(lane.cards, index)
+	for k = index + 1, count do
+		lane.extras[k - 1] = lane.extras[k]
+	end
+	lane.extras[count] = nil
+	return card, notes
+end
+
+local function put_card(lane: Lane, at: number, card: Card, notes: { string }?)
+	local count = #lane.cards
+	at = math.max(1, math.min(count + 1, at))
+	for k = count, at, -1 do
+		lane.extras[k + 1] = lane.extras[k]
+	end
+	table.insert(lane.cards, at, card)
+	lane.extras[at] = notes or {}
+	lane.extras[0] = lane.extras[0] or {}
+end
+
+local function remove_card(lane: Lane, index: number)
+	local count = #lane.cards
+	local notes = lane.extras[index] or {}
+	local previous = lane.extras[index - 1] or {}
+	for _, line in ipairs(notes) do
+		table.insert(previous, line)
+	end
+	lane.extras[index - 1] = previous
+	table.remove(lane.cards, index)
+	for k = index + 1, count do
+		lane.extras[k - 1] = lane.extras[k]
+	end
+	lane.extras[count] = nil
+end
+
+local function focus_later(cx: BlockCx?, id: string)
+	if not cx then
+		return
+	end
+	tern.timer(0, function()
+		pcall(function()
+			cx:frame({ { "focus", id } })
+		end)
+	end)
+end
+
+local function clear_editing(state: State, cx: BlockCx?)
+	state.editing = nil
+	if state.focus == "editor" then
+		state.focus = nil
+		if cx then
+			cx:frame({ { "focus", nil } })
+		end
+	end
+end
+
+local editor_id: (State, string, number) -> string
 
 local function selected_card(state: State): (Lane?, Card?, number?)
 	local selected = state.selected
@@ -267,7 +578,10 @@ end
 
 local function toggle_card(state: State, lane_index: number, card_index: number, checked: boolean)
 	local lane = state.lanes[lane_index]
-	local card = lane and lane.cards[card_index]
+	if lane == nil then
+		return
+	end
+	local card = lane.cards[card_index]
 	if card == nil then
 		return
 	end
@@ -275,34 +589,59 @@ local function toggle_card(state: State, lane_index: number, card_index: number,
 		return
 	end
 	remember(state)
-	table.remove(lane.cards, card_index)
+	local notes
+	card, notes = take_card(lane, card_index)
 	card.raw = nil
 	card.done = checked
 	if checked then
+		if not lane.done then
+			card.home = lane.id
+		end
 		local target = done_lane(state)
 		local destination = state.lanes[target]
-		table.insert(destination.cards, card)
+		put_card(destination, #destination.cards + 1, card, notes)
 		state.selected = { lane = target, card = #destination.cards }
 	else
-		local target = nil
-		for index, candidate in ipairs(state.lanes) do
-			if not candidate.done then
-				target = index
-				break
+		local target: number? = nil
+		if card.home then
+			for index, candidate in ipairs(state.lanes) do
+				if candidate.id == card.home and not candidate.done then
+					target = index
+					break
+				end
+			end
+		end
+		if target == nil and not lane.done then
+			target = lane_index
+		end
+		if target == nil then
+			for index, candidate in ipairs(state.lanes) do
+				if not candidate.done then
+					target = index
+					break
+				end
 			end
 		end
 		if target then
-			table.insert(state.lanes[target].cards, card)
-			state.selected = { lane = target, card = #state.lanes[target].cards }
+			local destination = state.lanes[target]
+			put_card(destination, #destination.cards + 1, card, notes)
+			state.selected = { lane = target, card = #destination.cards }
 		else
-			table.insert(lane.cards, card_index, card)
-			state.selected = { lane = lane_index, card = card_index }
+			local at = math.min(card_index, #lane.cards + 1)
+			put_card(lane, at, card, notes)
+			state.selected = { lane = lane_index, card = at }
 		end
+		card.home = nil
 	end
 	write_board(state)
 end
 
-local function start_card_edit(state: State, lane_index: number, card_index: number?, at: number?)
+local commit_editor: (State) -> ()
+
+local function start_card_edit(state: State, cx: BlockCx, lane_index: number, card_index: number?, at: number?)
+	if state.editing and state.editing.kind == "lane" then
+		commit_editor(state)
+	end
 	local lane = state.lanes[lane_index]
 	if lane == nil then
 		return
@@ -326,9 +665,14 @@ local function start_card_edit(state: State, lane_index: number, card_index: num
 	}
 	state.focus = "editor"
 	state.selected = if card_index then { lane = lane_index, card = card_index } else nil
+	state.folded[lane.id] = nil
+	focus_later(cx, editor_id(state, "card", lane_index))
 end
 
-local function start_lane_edit(state: State, lane_index: number)
+local function start_lane_edit(state: State, cx: BlockCx, lane_index: number)
+	if state.editing then
+		commit_editor(state)
+	end
 	local lane = state.lanes[lane_index]
 	if lane == nil then
 		return
@@ -340,9 +684,11 @@ local function start_lane_edit(state: State, lane_index: number)
 		cursor = utf16_len(lane.title),
 	}
 	state.focus = "editor"
+	state.folded[lane.id] = nil
+	focus_later(cx, editor_id(state, "lane", lane_index))
 end
 
-local function commit_editor(state: State)
+commit_editor = function(state: State)
 	local editing = state.editing
 	if editing == nil then
 		return
@@ -369,18 +715,24 @@ local function commit_editor(state: State)
 			end
 		else
 			local at = math.max(1, math.min(#lane.cards + 1, editing.at or (#lane.cards + 1)))
-			table.insert(lane.cards, at, { id = new_card_id(), text = text, done = false, raw = nil })
+			put_card(lane, at, { id = new_card_id(), text = text, done = false, raw = nil }, {})
 			state.selected = { lane = editing.lane, card = at }
 		end
 	else
 		local lane = state.lanes[editing.lane]
 		if lane then
-			remember(state)
+			if editing.new_lane then
+				push_undo(state, editing.base_text or serialize(state))
+			else
+				remember(state)
+			end
 			if text == "" then
 				text = "New lane"
 			end
+			local was_done = lane.done
 			lane.title = text
-			lane.done = text:lower() == "done"
+			lane.done = was_done or text:lower() == "done"
+			lane.heading_raw = nil
 		end
 	end
 	state.editing = nil
@@ -388,19 +740,48 @@ local function commit_editor(state: State)
 	write_board(state)
 end
 
-local function cancel_editor(state: State)
+local function cancel_editor(state: State, cx: BlockCx?)
+	local editing = state.editing
+	if editing and editing.kind == "lane" and editing.new_lane then
+		local index = editing.lane
+		if state.lanes[index] then
+			table.remove(state.lanes, index)
+			if state.selected and state.selected.lane > index then
+				state.selected.lane -= 1
+			end
+		end
+	end
 	state.editing = nil
 	state.focus = nil
+	if cx then
+		cx:frame({ { "focus", nil } })
+	end
 end
 
-local function insert_lane(state: State, after: number?)
-	remember(state)
-	local lane: Lane = { title = "New lane", done = false, cards = {} }
+local function insert_lane(state: State, cx: BlockCx, after: number?)
+	if state.editing then
+		commit_editor(state)
+	end
+	local base_text = serialize(state)
 	local at = if after then math.min(#state.lanes + 1, after + 1) else #state.lanes + 1
+	local lane: Lane = {
+		id = new_lane_id(),
+		title = "New lane",
+		done = false,
+		cards = {},
+		extras = { [0] = {} },
+		heading_raw = nil,
+	}
 	table.insert(state.lanes, at, lane)
 	state.selected = nil
-	start_lane_edit(state, at)
-	write_board(state)
+	state.pending_delete_lane = nil
+	start_lane_edit(state, cx, at)
+	if state.editing then
+		state.editing.new_lane = true
+		state.editing.base_text = base_text
+		state.editing.text = ""
+		state.editing.cursor = 0
+	end
 end
 
 local function card_menu(state: State, lane_index: number, card_index: number): { any }
@@ -464,19 +845,22 @@ local function card_row(state: State, lane_index: number, card_index: number, ca
 end
 
 local function lane_menu(state: State, lane_index: number): { any }
+	local lane = state.lanes[lane_index]
+	local named_done = lane.title:lower() == "done"
+	local delete_label = if state.pending_delete_lane == lane_index then "Confirm delete lane" else "Delete lane"
 	return {
 		{ id = "lane_new_card:" .. lane_index, label = "New card" },
 		{ id = "rename_lane:" .. lane_index, label = "Rename lane…" },
 		{ id = "new_lane_after:" .. lane_index, label = "New lane" },
 		{ id = "move_lane_left:" .. lane_index, label = "Move lane left", disabled = lane_index <= 1 },
 		{ id = "move_lane_right:" .. lane_index, label = "Move lane right", disabled = lane_index >= #state.lanes },
-		{ id = "done_lane:" .. lane_index, label = "Done lane", checked = state.lanes[lane_index].done },
-		{ id = "delete_lane:" .. lane_index, label = "Delete lane", danger = true },
+		{ id = "done_lane:" .. lane_index, label = "Done lane", checked = lane.done, disabled = named_done },
+		{ id = "delete_lane:" .. lane_index, label = delete_label, danger = true },
 	}
 end
 
 local function board_menu(state: State): { any }
-	return {
+	local items: { any } = {
 		{ id = "new_card_below", label = "New card below", keys = { "o" } },
 		{ id = "new_lane", label = "New lane" },
 		"-",
@@ -486,12 +870,18 @@ local function board_menu(state: State): { any }
 		{ id = "hide_done", label = "Hide done cards", keys = { "shift", "x" }, checked = state.hide_done },
 		{ id = "switch_view", label = "Switch board/list view", keys = { "v" } },
 		"-",
-		{ id = "open_markdown", label = "Open as Markdown" },
-		{ id = "reveal", label = "Reveal in Finder" },
-		{ id = "copy_path", label = "Copy path" },
-		"-",
-		{ id = "close", label = "Close board" },
+		{ id = "refresh", label = "Reload from disk" },
 	}
+	if state.conflict then
+		table.insert(items, { id = "force_write", label = "Overwrite file on disk", danger = true })
+	end
+	table.insert(items, "-")
+	table.insert(items, { id = "open_markdown", label = "Open as Markdown" })
+	table.insert(items, { id = "reveal", label = "Open folder" })
+	table.insert(items, { id = "copy_path", label = "Copy path" })
+	table.insert(items, "-")
+	table.insert(items, { id = "close", label = "Close board" })
+	return items
 end
 
 local function lane_view(state: State, lane_index: number, lane: Lane): Node?
@@ -512,14 +902,14 @@ local function lane_view(state: State, lane_index: number, lane: Lane): Node?
 	local head: { Node } = {}
 	if state.view == "list" then
 		head[#head + 1] = with(ui.button("", {
-			icon = if state.folded[lane_index] then "chev-r" else "chev",
+			icon = if state.folded[lane.id] then "chev-r" else "chev",
 			size = "sm",
 			variant = "quiet",
-			title = if state.folded[lane_index] then "Expand lane" else "Fold lane",
+			title = if state.folded[lane.id] then "Expand lane" else "Fold lane",
 		}), { actions = { click = "fold:" .. lane_index } })
 	end
 	if editing_lane and state.editing then
-		head[#head + 1] = ui.el("div", { class = "fb-lane-title" }, {
+		head[#head + 1] = ui.el("div", { key = "editor", class = "fb-lane-title" }, {
 			ui.node("input", {
 				key = "lane-editor",
 				text = state.editing.text,
@@ -560,7 +950,7 @@ local function lane_view(state: State, lane_index: number, lane: Lane): Node?
 		then (state.editing.at or (#lane.cards + 1))
 		else nil
 	local function editor_node(): Node
-		return ui.el("div", { class = "fb-editor" }, {
+		return ui.el("div", { key = "editor", class = "fb-editor" }, {
 			ui.node("input", {
 				key = "card-editor",
 				text = state.editing and state.editing.text or "",
@@ -582,12 +972,11 @@ local function lane_view(state: State, lane_index: number, lane: Lane): Node?
 	end
 	for card_index, card in ipairs(lane.cards) do
 		local matches = query == "" or card.text:lower():find(query, 1, true) ~= nil
-		if matches and not (state.hide_done and card.done) then
-			if editing_existing and state.editing and state.editing.card == card_index then
-				body[#body + 1] = editor_node()
-			else
-				body[#body + 1] = card_row(state, lane_index, card_index, card)
-			end
+		local is_editing = editing_existing and state.editing and state.editing.card == card_index
+		if is_editing then
+			body[#body + 1] = editor_node()
+		elseif matches and not (state.hide_done and card.done) then
+			body[#body + 1] = card_row(state, lane_index, card_index, card)
 		end
 		if new_at == card_index + 1 then
 			add_editor()
@@ -602,76 +991,42 @@ local function lane_view(state: State, lane_index: number, lane: Lane): Node?
 		variant = "quiet",
 	}), { actions = { click = "add_card:" .. lane_index } })
 
-	local folded = state.view == "list" and state.folded[lane_index] == true
+	local folded = state.view == "list" and state.folded[lane.id] == true
 	return ui.el("div", {
+		key = "lane" .. lane.id,
 		class = "fb-lane" .. (if folded then " fb-folded" else ""),
 		role = "flowboard.lane",
 	}, {
-		ui.el("div", { class = "fb-lane-head" }, head),
-		ui.el("div", { class = "fb-lane-body" }, body),
+		ui.el("div", { key = "head", class = "fb-lane-head" }, head),
+		ui.el("div", { key = "body", class = "fb-lane-body" }, body),
 	})
 end
 
-local LANE_CELLS = 34
-
-local function estimated(lane: Lane): number
-	-- Rows: 36px header (4.5), 22px Add card (2.75), 8px padding (1);
-	-- a card row is 34px (4.25), each extra wrapped line about 18px (2.3).
-	local height = 4.5 + 2.75 + 1
-	for _, card in ipairs(lane.cards) do
-		local lines = math.max(1, math.ceil(#card.text / 32))
-		height += 4.25 + (lines - 1) * 2.3 + 0.5
-	end
-	return height
-end
-
-local function packed_columns(lanes: { Lane }, cols: number): { { Lane } }
-	local count = math.max(1, math.min(#lanes, math.floor(math.max(LANE_CELLS, cols) / LANE_CELLS)))
-	if count <= 1 or #lanes == 0 then
-		return { lanes }
-	end
-	local prefix: { number } = { 0 }
-	for index, lane in ipairs(lanes) do
-		prefix[index + 1] = prefix[index] + estimated(lane)
-	end
-	local dp: { { number } } = {}
-	local cut: { { number } } = {}
-	for column = 1, count do
-		dp[column] = {}
-		cut[column] = {}
-	end
-	for index = 1, #lanes do
-		dp[1][index] = prefix[index + 1]
-	end
-	for column = 2, count do
-		for index = 1, #lanes do
-			dp[column][index] = math.huge
-			for split = column - 1, index - 1 do
-				local cost = math.max(dp[column - 1][split], prefix[index + 1] - prefix[split + 1])
-				if cost < dp[column][index] then
-					dp[column][index] = cost
-					cut[column][index] = split
+editor_id = function(state: State, kind: string, lane_index: number): string
+	local lane = state.lanes[lane_index]
+	local lane_key = if lane then "lane" .. lane.id else "lane" .. lane_index
+	local lane_path = lane_key
+	if state.view == "board" and lane then
+		local groups = packed_columns(state, state.lanes, state.cols)
+		local found = false
+		for _, group in ipairs(groups) do
+			for _, candidate in ipairs(group) do
+				if candidate.id == lane.id then
+					lane_path = "col" .. group[1].id .. "." .. lane_key
+					found = true
+					break
 				end
+			end
+			if found then
+				break
 			end
 		end
 	end
-	local groups: { { Lane } } = {}
-	local index = #lanes
-	for column = count, 2, -1 do
-		local split = cut[column][index]
-		local group: { Lane } = {}
-		for lane_index = split + 1, index do
-			table.insert(group, lanes[lane_index])
-		end
-		table.insert(groups, 1, group)
-		index = split
+	local prefix = "main.root.content." .. lane_path
+	if kind == "lane" then
+		return prefix .. ".head.editor.lane-editor"
 	end
-	local first: { Lane } = {}
-	for lane_index = 1, index do
-		table.insert(first, lanes[lane_index])
-	end
-	table.insert(groups, 1, first)
-	return groups
+	return prefix .. ".body.editor.card-editor"
 end
 
 local function toolbar(state: State): Node
@@ -718,7 +1073,7 @@ local function toolbar(state: State): Node
 		align = "end",
 		items = board_menu(state),
 	})
-	return ui.el("div", { class = "fb-toolbar" }, {
+	return ui.el("div", { key = "toolbar", class = "fb-toolbar" }, {
 		title,
 		ui.node("row", { key = "spacer", grow = 1 }),
 		count,
@@ -732,9 +1087,10 @@ end
 local function view(state: State, _cx: BlockCx): Node
 	local content: Node
 	if state.view == "board" then
-		local packed = packed_columns(state.lanes, state.cols)
-		local groups: { { Node } } = {}
+		local packed = packed_columns(state, state.lanes, state.cols)
+		local groups: { { key: string, lanes: { Node } } } = {}
 		for _, group in ipairs(packed) do
+			local key = "col" .. group[1].id
 			local lanes: { Node } = {}
 			for _, lane in ipairs(group) do
 				for index, candidate in ipairs(state.lanes) do
@@ -747,22 +1103,25 @@ local function view(state: State, _cx: BlockCx): Node
 					end
 				end
 			end
-			groups[#groups + 1] = lanes
+			if #lanes > 0 then
+				groups[#groups + 1] = { key = key, lanes = lanes }
+			end
 		end
 		if #groups == 0 then
-			groups[1] = {}
+			groups[1] = { key = "col0", lanes = {} }
 		end
-		groups[#groups][#groups[#groups] + 1] = ui.el("div", { class = "fb-add" }, {
+		local last = groups[#groups]
+		last.lanes[#last.lanes + 1] = ui.el("div", { class = "fb-add" }, {
 			with(ui.button("Add lane", {
 				icon = "plus",
 				variant = "quiet",
 			}), { actions = { click = "new_lane" } }),
 		})
 		local columns: { Node } = {}
-		for _, lanes in ipairs(groups) do
-			columns[#columns + 1] = ui.el("div", { class = "fb-col" }, lanes)
+		for _, group in ipairs(groups) do
+			columns[#columns + 1] = ui.el("div", { key = group.key, class = "fb-col" }, group.lanes)
 		end
-		content = ui.el("div", { class = "fb-cols" }, columns)
+		content = ui.el("div", { key = "content", class = "fb-cols" }, columns)
 	else
 		local lanes: { Node } = {}
 		for index, lane in ipairs(state.lanes) do
@@ -775,19 +1134,30 @@ local function view(state: State, _cx: BlockCx): Node
 			icon = "plus",
 			variant = "quiet",
 		}), { actions = { click = "new_lane" } })
-		content = ui.el("div", { class = "fb-lanes fb-list" }, lanes)
+		content = ui.el("div", { key = "content", class = "fb-lanes fb-list" }, lanes)
 	end
 	local children: { Node } = { toolbar(state) }
 	if state.error then
-		children[#children + 1] = ui.el("div", { class = "fb-error" }, {
+		children[#children + 1] = ui.el("div", { key = "error", class = "fb-error" }, {
 			ui.text({ ui.span(state.error, "error") }),
 		})
 	end
+	if state.conflict then
+		children[#children + 1] = ui.node("row", { key = "conflict", gap = "sm" }, {
+			with(ui.button("Reload from disk", { size = "sm" }), { actions = { click = "refresh" } }),
+			with(ui.button("Overwrite", { size = "sm", variant = "danger" }), { actions = { click = "force_write" } }),
+		})
+	end
 	children[#children + 1] = content
-	return ui.el("div", { class = "fb-root" }, children)
+	return ui.el("div", { key = "root", class = "fb-root" }, children)
 end
 
 local function edit_key(state: State, target: string, key: Key, cx: BlockCx): boolean
+	if target == "editor" and state.editing == nil then
+		state.focus = nil
+		cx:frame({ { "focus", nil } })
+		return true
+	end
 	local text = if target == "filter" then state.filter else (state.editing and state.editing.text) or ""
 	local cursor = if target == "filter" then state.filter_cursor else (state.editing and state.editing.cursor) or 0
 	local handled = true
@@ -811,12 +1181,12 @@ local function edit_key(state: State, target: string, key: Key, cx: BlockCx): bo
 			commit_editor(state)
 		else
 			state.focus = nil
-			cx:frame({ { "focus", nil } })
 		end
+		cx:frame({ { "focus", nil } })
 		return true
 	elseif key.name == "escape" then
 		if target == "editor" then
-			cancel_editor(state)
+			cancel_editor(state, cx)
 		else
 			state.focus = nil
 			cx:frame({ { "focus", nil } })
@@ -838,70 +1208,124 @@ local function edit_key(state: State, target: string, key: Key, cx: BlockCx): bo
 	return handled
 end
 
+local function first_card_lane(state: State, from: number, step: number): number?
+	local index = from
+	while index >= 1 and index <= #state.lanes do
+		if #state.lanes[index].cards > 0 then
+			return index
+		end
+		index += step
+	end
+	return nil
+end
+
 local function move_selection(state: State, direction: string)
-	local lane_count = #state.lanes
-	if lane_count == 0 then
+	if #state.lanes == 0 then
 		return
 	end
 	local selected = state.selected
 	if selected == nil then
-		local first = state.lanes[1]
-		if #first.cards > 0 then
-			state.selected = { lane = 1, card = 1 }
+		local first = first_card_lane(state, 1, 1)
+		if first then
+			state.selected = { lane = first, card = 1 }
 		end
 		return
 	end
 	local lane = state.lanes[selected.lane]
-	if lane == nil then
-		state.selected = nil
+	if lane == nil or #lane.cards == 0 then
+		local first = first_card_lane(state, math.min(selected.lane, #state.lanes), 1)
+			or first_card_lane(state, #state.lanes, -1)
+		if first then
+			state.selected = { lane = first, card = 1 }
+		else
+			state.selected = nil
+		end
 		return
 	end
+	local card = math.max(1, math.min(selected.card, #lane.cards))
 	if direction == "up" then
-		state.selected = { lane = selected.lane, card = math.max(1, selected.card - 1) }
+		state.selected = { lane = selected.lane, card = math.max(1, card - 1) }
 	elseif direction == "down" then
-		state.selected = { lane = selected.lane, card = math.min(#lane.cards, selected.card + 1) }
+		state.selected = { lane = selected.lane, card = math.min(#lane.cards, card + 1) }
 	elseif direction == "left" then
-		local target = math.max(1, selected.lane - 1)
-		state.selected = { lane = target, card = math.min(selected.card, math.max(1, #state.lanes[target].cards)) }
+		local target = first_card_lane(state, selected.lane - 1, -1)
+		if target then
+			state.selected = { lane = target, card = math.min(card, #state.lanes[target].cards) }
+		end
 	elseif direction == "right" then
-		local target = math.min(lane_count, selected.lane + 1)
-		state.selected = { lane = target, card = math.min(selected.card, math.max(1, #state.lanes[target].cards)) }
+		local target = first_card_lane(state, selected.lane + 1, 1)
+		if target then
+			state.selected = { lane = target, card = math.min(card, #state.lanes[target].cards) }
+		end
+	end
+end
+
+local function swap_lanes(state: State, left: number, right: number)
+	state.lanes[left], state.lanes[right] = state.lanes[right], state.lanes[left]
+	if state.selected then
+		if state.selected.lane == left then
+			state.selected.lane = right
+		elseif state.selected.lane == right then
+			state.selected.lane = left
+		end
+	end
+	if state.editing then
+		if state.editing.lane == left then
+			state.editing.lane = right
+		elseif state.editing.lane == right then
+			state.editing.lane = left
+		end
 	end
 end
 
 local function handle_action(state: State, act: string, checked: boolean?, cx: BlockCx)
+	local pending_lane = state.pending_delete_lane
+	state.pending_delete_lane = nil
+
 	if act == "hide_done" then
 		state.hide_done = if checked ~= nil then checked else not state.hide_done
 		return
 	end
-	if act == "switch_view" then
-		state.view = if state.view == "board" then "list" else "board"
-		return
-	end
-	if act == "view_board" then
-		state.view = "board"
-		return
-	end
-	if act == "view_list" then
-		state.view = "list"
+	if act == "switch_view" or act == "view_board" or act == "view_list" then
+		if state.editing then
+			commit_editor(state)
+		end
+		if act == "view_board" then
+			state.view = "board"
+		elseif act == "view_list" then
+			state.view = "list"
+		else
+			state.view = if state.view == "board" then "list" else "board"
+		end
 		return
 	end
 	if act == "undo" then
-		undo(state)
+		undo(state, cx)
 		return
 	end
 	if act == "redo" then
-		redo(state)
+		redo(state, cx)
 		return
 	end
 	if act == "new_lane" then
-		insert_lane(state, nil)
+		insert_lane(state, cx, nil)
 		return
 	end
 	if act == "refresh" then
-		local lanes, error = read_board(state.path)
-		state.lanes, state.error = lanes, error
-		state.undo, state.redo, state.selected = {}, {}, nil
+		local doc, text, error = read_board(state.path)
+		if doc then
+			apply_doc(state, doc, text or "")
+			state.undo, state.redo, state.selected = {}, {}, nil
+			state.editing, state.focus = nil, nil
+			state.conflict = false
+			state.error = nil
+		else
+			state.error = error
+		end
+		return
+	end
+	if act == "force_write" then
+		write_board(state, true)
 		return
 	end
 	if act == "clear" then
@@ -931,13 +1355,16 @@ local function handle_action(state: State, act: string, checked: boolean?, cx: B
 			return
 		end
 		local at = if state.selected then state.selected.card + 1 else #lane.cards + 1
-		start_card_edit(state, lane_index, nil, at)
+		start_card_edit(state, cx, lane_index, nil, at)
 		return
 	end
 	local fold_index = act:match("^fold:(%d+)$")
 	if fold_index then
 		local index = tonumber(fold_index)
-		state.folded[index] = not (state.folded[index] == true)
+		local lane = state.lanes[index]
+		if lane then
+			state.folded[lane.id] = not (state.folded[lane.id] == true)
+		end
 		return
 	end
 	local lane_index, card_index = act:match("^select:(%d+):(%d+)$")
@@ -947,22 +1374,22 @@ local function handle_action(state: State, act: string, checked: boolean?, cx: B
 	end
 	lane_index = act:match("^new_card_top:(%d+)$")
 	if lane_index then
-		start_card_edit(state, tonumber(lane_index), nil, 1)
+		start_card_edit(state, cx, tonumber(lane_index), nil, 1)
 		return
 	end
 	lane_index = act:match("^add_card:(%d+)$")
 	if lane_index then
-		start_card_edit(state, tonumber(lane_index), nil, nil)
+		start_card_edit(state, cx, tonumber(lane_index), nil, nil)
 		return
 	end
 	lane_index = act:match("^lane_new_card:(%d+)$")
 	if lane_index then
-		start_card_edit(state, tonumber(lane_index), nil, nil)
+		start_card_edit(state, cx, tonumber(lane_index), nil, nil)
 		return
 	end
 	lane_index, card_index = act:match("^edit_card:(%d+):(%d+)$")
 	if lane_index then
-		start_card_edit(state, tonumber(lane_index), tonumber(card_index), nil)
+		start_card_edit(state, cx, tonumber(lane_index), tonumber(card_index), nil)
 		return
 	end
 	lane_index, card_index = act:match("^new_card_after:(%d+):(%d+)$")
@@ -970,25 +1397,28 @@ local function handle_action(state: State, act: string, checked: boolean?, cx: B
 		local lane = state.lanes[tonumber(lane_index)]
 		local index = tonumber(card_index)
 		if lane and lane.cards[index] then
-			start_card_edit(state, tonumber(lane_index), nil, index + 1)
+			start_card_edit(state, cx, tonumber(lane_index), nil, index + 1)
 		end
 		return
 	end
 	local from_lane, to_lane
 	from_lane, card_index, to_lane = act:match("^move_card:(%d+):(%d+):(%d+)$")
 	if from_lane then
-		local source = state.lanes[tonumber(from_lane)]
-		local target = state.lanes[tonumber(to_lane)]
+		local source_index = tonumber(from_lane)
+		local target_index = tonumber(to_lane)
 		local index = tonumber(card_index)
+		local source = state.lanes[source_index]
+		local target = state.lanes[target_index]
 		local card = source and source.cards[index]
 		if source and target and card and source ~= target then
 			remember(state)
-			table.remove(source.cards, index)
-			card.raw = nil
-			card.done = target.done
-			table.insert(target.cards, card)
-			state.selected = { lane = tonumber(to_lane), card = #target.cards }
-			state.editing = nil
+			local moved, notes = take_card(source, index)
+			moved.done = target.done
+			moved.raw = nil
+			moved.home = if target.done and not source.done then source.id else nil
+			put_card(target, #target.cards + 1, moved, notes)
+			state.selected = { lane = target_index, card = #target.cards }
+			clear_editing(state, cx)
 			write_board(state)
 		end
 		return
@@ -999,21 +1429,21 @@ local function handle_action(state: State, act: string, checked: boolean?, cx: B
 		local index = tonumber(card_index)
 		if lane and lane.cards[index] then
 			remember(state)
-			table.remove(lane.cards, index)
+			remove_card(lane, index)
 			state.selected = nil
-			state.editing = nil
+			clear_editing(state, cx)
 			write_board(state)
 		end
 		return
 	end
 	lane_index = act:match("^rename_lane:(%d+)$")
 	if lane_index then
-		start_lane_edit(state, tonumber(lane_index))
+		start_lane_edit(state, cx, tonumber(lane_index))
 		return
 	end
 	local after = act:match("^new_lane_after:(%d+)$")
 	if after then
-		insert_lane(state, tonumber(after))
+		insert_lane(state, cx, tonumber(after))
 		return
 	end
 	lane_index = act:match("^move_lane_left:(%d+)$")
@@ -1021,7 +1451,7 @@ local function handle_action(state: State, act: string, checked: boolean?, cx: B
 		local index = tonumber(lane_index)
 		if index > 1 then
 			remember(state)
-			state.lanes[index], state.lanes[index - 1] = state.lanes[index - 1], state.lanes[index]
+			swap_lanes(state, index, index - 1)
 			write_board(state)
 		end
 		return
@@ -1031,7 +1461,7 @@ local function handle_action(state: State, act: string, checked: boolean?, cx: B
 		local index = tonumber(lane_index)
 		if index < #state.lanes then
 			remember(state)
-			state.lanes[index], state.lanes[index + 1] = state.lanes[index + 1], state.lanes[index]
+			swap_lanes(state, index, index + 1)
 			write_board(state)
 		end
 		return
@@ -1039,7 +1469,7 @@ local function handle_action(state: State, act: string, checked: boolean?, cx: B
 	lane_index = act:match("^done_lane:(%d+)$")
 	if lane_index then
 		local lane = state.lanes[tonumber(lane_index)]
-		if lane then
+		if lane and lane.title:lower() ~= "done" then
 			remember(state)
 			lane.done = if checked ~= nil then checked else not lane.done
 			write_board(state)
@@ -1049,10 +1479,51 @@ local function handle_action(state: State, act: string, checked: boolean?, cx: B
 	lane_index = act:match("^delete_lane:(%d+)$")
 	if lane_index then
 		local index = tonumber(lane_index)
-		if state.lanes[index] then
+		local lane = state.lanes[index]
+		if lane then
+			if pending_lane ~= index then
+				state.pending_delete_lane = index
+				return
+			end
 			remember(state)
+			local carried: { string } = {}
+			for anchor = 0, #lane.cards do
+				for _, line in ipairs(lane.extras[anchor] or {}) do
+					if trim(line) ~= DONE_MARKER then
+						table.insert(carried, line)
+					end
+				end
+			end
+			if #carried > 0 then
+				if index > 1 then
+					local previous = state.lanes[index - 1]
+					local anchor = #previous.cards
+					local bucket = previous.extras[anchor] or {}
+					for _, line in ipairs(carried) do
+						table.insert(bucket, line)
+					end
+					previous.extras[anchor] = bucket
+				else
+					for _, line in ipairs(carried) do
+						table.insert(state.preamble, line)
+					end
+				end
+			end
 			table.remove(state.lanes, index)
-			state.selected = nil
+			if state.selected then
+				if state.selected.lane == index then
+					state.selected = nil
+				elseif state.selected.lane > index then
+					state.selected.lane -= 1
+				end
+			end
+			if state.editing then
+				if state.editing.lane == index then
+					clear_editing(state, cx)
+				elseif state.editing.lane > index then
+					state.editing.lane -= 1
+				end
+			end
 			write_board(state)
 		end
 		return
@@ -1068,10 +1539,18 @@ tern.block.define("board", {
 		if path == nil then
 			path = join(cx.cwd or "", "TODO.md")
 		end
-		local lanes, error = read_board(path)
+		local doc, text, error = read_board(path)
+		if doc == nil then
+			doc = { lanes = {}, preamble = {}, newline = "\n", final_newline = true }
+		end
 		return {
 			path = path,
-			lanes = lanes,
+			lanes = doc.lanes,
+			preamble = doc.preamble,
+			newline = doc.newline,
+			final_newline = doc.final_newline,
+			disk_text = text,
+			conflict = false,
 			cols = cx.cols,
 			filter = "",
 			filter_cursor = 0,
@@ -1081,6 +1560,7 @@ tern.block.define("board", {
 			editing = nil,
 			focus = nil,
 			selected = nil,
+			pending_delete_lane = nil,
 			undo = {},
 			redo = {},
 			error = error,
@@ -1107,11 +1587,11 @@ tern.block.define("board", {
 			return edit_key(state, "editor", key, cx)
 		end
 		if key.ctrl and key.name == "z" then
-			undo(state)
+			undo(state, cx)
 			return true
 		end
 		if key.ctrl and key.name == "y" then
-			redo(state)
+			redo(state, cx)
 			return true
 		end
 		if key.shift and key.name == "x" then
@@ -1119,6 +1599,9 @@ tern.block.define("board", {
 			return true
 		end
 		if key.text == "v" then
+			if state.editing then
+				commit_editor(state)
+			end
 			state.view = if state.view == "board" then "list" else "board"
 			return true
 		end
@@ -1129,13 +1612,12 @@ tern.block.define("board", {
 				return false
 			end
 			local at = if state.selected then state.selected.card + 1 else #lane.cards + 1
-			start_card_edit(state, lane_index, nil, at)
+			start_card_edit(state, cx, lane_index, nil, at)
 			return true
 		end
 		if key.name == "space" then
-			local lane, _, card_index = selected_card(state)
-			if lane and card_index and state.selected then
-				local card = lane.cards[card_index]
+			local lane, card, card_index = selected_card(state)
+			if lane and card and card_index and state.selected then
 				toggle_card(state, state.selected.lane, card_index, not card.done)
 				return true
 			end
@@ -1143,7 +1625,7 @@ tern.block.define("board", {
 		if key.name == "enter" then
 			local lane, card, card_index = selected_card(state)
 			if lane and card and card_index and state.selected then
-				start_card_edit(state, state.selected.lane, card_index, nil)
+				start_card_edit(state, cx, state.selected.lane, card_index, nil)
 				return true
 			end
 		end
@@ -1155,12 +1637,13 @@ tern.block.define("board", {
 			state.selected = nil
 			return true
 		end
-		if key.name == "delete" or key.name == "backspace" then
-			local lane, _, card_index = selected_card(state)
-			if lane and card_index and state.selected then
+		if key.name == "delete" then
+			local lane, card, card_index = selected_card(state)
+			if lane and card and card_index and state.selected then
 				remember(state)
-				table.remove(lane.cards, card_index)
+				remove_card(lane, card_index)
 				state.selected = nil
+				clear_editing(state, cx)
 				write_board(state)
 				return true
 			end
@@ -1178,16 +1661,23 @@ tern.block.define("board", {
 		end
 		if event.ev == "action" then
 			local act = tostring(event.act or "")
+			local had_editor = state.focus == "editor"
 			if state.focus == "filter" and act ~= "clear" then
 				state.focus = nil
 				cx:frame({ { "focus", nil } })
 			end
 			handle_action(state, act, event.checked, cx)
+			if had_editor and state.focus ~= "editor" then
+				cx:frame({ { "focus", nil } })
+			end
 			return
 		end
 		if event.ev == "change" then
 			local card_id = tostring(event.name or ""):match("^toggle:(%d+)$")
 			if card_id then
+				if state.editing then
+					commit_editor(state)
+				end
 				local id = tonumber(card_id)
 				for lane_index, lane in ipairs(state.lanes) do
 					for card_index, card in ipairs(lane.cards) do
@@ -1202,6 +1692,10 @@ tern.block.define("board", {
 		end
 		if event.ev == "select" then
 			if event.item == "board" or event.item == "list" then
+				if state.editing then
+					commit_editor(state)
+					cx:frame({ { "focus", nil } })
+				end
 				state.view = event.item
 			end
 			return
@@ -1209,6 +1703,9 @@ tern.block.define("board", {
 		if event.ev == "focus" then
 			local id = tostring(event.id or "")
 			if id:match("%.filter$") then
+				if state.editing then
+					commit_editor(state)
+				end
 				state.focus = "filter"
 			elseif id:match("%.card%-editor$") or id:match("%.lane%-editor$") then
 				state.focus = "editor"
@@ -1218,6 +1715,11 @@ tern.block.define("board", {
 		end
 		if event.ev == "edit" then
 			local id = tostring(event.id or "")
+			local current = if id:match("%.filter$") then state.filter else (state.editing and state.editing.text) or ""
+			local len = tonumber(event.len)
+			if len ~= nil and len ~= utf16_len(current) then
+				return
+			end
 			local from = tonumber(event.from) or 0
 			local to = tonumber(event.to) or from
 			local insert = tostring(event.text or "")
@@ -1232,7 +1734,10 @@ tern.block.define("board", {
 			return
 		end
 		if event.ev == "undo" then
-			undo(state)
+			local id = tostring(event.id or "")
+			if not id:match("%.filter$") then
+				undo(state, cx)
+			end
 		end
 	end,
 

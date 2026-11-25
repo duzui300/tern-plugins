@@ -92,6 +92,12 @@
 		min-height: 0;
 	}
 
+	.fb-lanes.fb-list {
+		align-content: flex-start;
+		flex: 1 1 0;
+		overflow-y: auto;
+	}
+
 	.fb-lane {
 		background: rgb(from var(--ink) r g b / 3.5%);
 		border: 0;
