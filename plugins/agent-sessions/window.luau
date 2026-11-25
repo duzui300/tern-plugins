@@ -19,9 +19,14 @@ local S = {
 	loading = false,
 	pane = nil,
 	scanning = false,
+	page = 0,
+	warned = {},
+	render_error = nil,
 }
 
 local AGENT_ORDER = { claude = 1, antigravity = 2, omp = 3, pi = 4, carly = 5 }
+local PAGE_SIZE = 80
+local SAFE_ID = "^[%w%-_%.]+$"
 
 local function trim(s)
 	return (s or ""):match("^%s*(.-)%s*$")
@@ -54,8 +59,10 @@ end
 
 local function label_of(s)
 	local a = tags_of(s).alias
-	if a and a ~= "" then return a end
-	return s.title or "(untitled)"
+	if a and trim(a) ~= "" then return a end
+	local title = s.title or ""
+	if trim(title) == "" then return "(untitled)" end
+	return title
 end
 
 local function short_title(s)
@@ -98,23 +105,21 @@ local function short_cwd(s)
 	return s.cwd:match("[^\\/]+$") or s.cwd
 end
 
-local function short_meta(s)
-	local t = tags_of(s)
-	local bits = {}
-	local c = short_cwd(s)
-	if c ~= "" then bits[#bits + 1] = c end
-	if t.tags and #t.tags > 0 then bits[#bits + 1] = "#" .. table.concat(t.tags, " #") end
-	return cut_chars(table.concat(bits, "  "), 34)
-end
-
 -- Resume commands start with approvals already answered: Claude Code bypasses the
 -- permission prompts, and Antigravity and omp run in their full bypass mode, so a
 -- resumed session behaves like the agents launched from Tern here.
+local function safe_id(id)
+	if type(id) == "string" and id ~= "" and id ~= "." and id ~= ".." and id:match(SAFE_ID) then return id end
+	return nil
+end
+
 local function resume_cmd(s)
-	if s.agent == "claude" then return "claude --resume " .. s.id .. " --dangerously-skip-permissions" end
-	if s.agent == "pi" then return "pi --session " .. s.id end
-	if s.agent == "omp" then return "omp --resume " .. s.id .. " --approval-mode=yolo" end
-	if s.agent == "antigravity" then return "agy --conversation " .. s.id .. " --dangerously-skip-permissions" end
+	local id = safe_id(s.id)
+	if not id then return nil end
+	if s.agent == "claude" then return "claude --resume " .. id .. " --dangerously-skip-permissions" end
+	if s.agent == "pi" then return "pi --session " .. id end
+	if s.agent == "omp" then return "omp --resume " .. id .. " --approval-mode=yolo" end
+	if s.agent == "antigravity" then return "agy --conversation " .. id .. " --dangerously-skip-permissions" end
 	return nil
 end
 
@@ -166,6 +171,12 @@ local function action_button(icon, label, act)
 	return ui.button(nil, { icon = icon, title = label, size = "sm", actions = { click = act } })
 end
 
+local function warn_once(cx, key, level, text, sub)
+	if S.warned[key] then return end
+	S.warned[key] = true
+	cx:toast(level, text, sub)
+end
+
 local function selected_count()
 	local n = 0
 	for _ in pairs(S.selected) do n = n + 1 end
@@ -204,8 +215,17 @@ local function meta_row(s)
 	if c ~= "" then
 		nodes[#nodes + 1] = ui.text({ ui.span(c, "muted") })
 	end
+	if label_of(s) == "(untitled)" and s.id and s.id ~= "" then
+		nodes[#nodes + 1] = ui.text({ ui.span(s.id:sub(1, 8), "muted") })
+	end
+	local shown = 0
 	for _, tag in ipairs(t.tags or {}) do
+		if shown >= 3 then
+			nodes[#nodes + 1] = ui.badge("+" .. tostring(#t.tags - 3))
+			break
+		end
 		nodes[#nodes + 1] = ui.badge("#" .. cut_chars(tag, 16))
+		shown = shown + 1
 	end
 	if #nodes == 0 then
 		nodes[1] = ui.text({ ui.span(" ", "muted") })
@@ -242,7 +262,7 @@ local function session_actions(s)
 	if cmd then
 		acts[#acts + 1] = action_button("play", "Resume this session", "resume:" .. key_of(s))
 		acts[#acts + 1] = action_button("copy", "Copy the resume command", "copy:" .. key_of(s))
-	elseif s.agent == "carly" then
+	elseif s.path and s.path ~= "" then
 		acts[#acts + 1] = action_button("copy", "Copy the transcript path", "copy:" .. key_of(s))
 	end
 	acts[#acts + 1] = action_button("pen", "Rename", "rename:" .. key_of(s))
@@ -304,6 +324,24 @@ local function toolbar(all_open)
 	})
 end
 
+local function filter_summary()
+	local chips = {}
+	if S.filter.folder then
+		chips[#chips + 1] = ui.badge("folder: " .. cut_chars(S.filter.folder, 36))
+	end
+	if S.filter.tag then
+		chips[#chips + 1] = ui.badge("#" .. cut_chars(S.filter.tag, 24))
+	end
+	if S.filter.q then
+		chips[#chips + 1] = ui.badge('"' .. cut_chars(S.filter.q, 24) .. '"')
+	end
+	if #chips == 0 then return nil end
+	chips[#chips + 1] = ui.button("Clear filters", {
+		size = "sm", variant = "quiet", icon = "x", actions = { click = "clear-filters" },
+	})
+	return ui.node("row", { gap = "xs", wrap = true, align = "center" }, chips)
+end
+
 local function build_list()
 	local items = {}
 	for _, s in ipairs(S.rows) do
@@ -325,6 +363,21 @@ local function build_list()
 		table.sort(order)
 	end
 
+	local entries = {}
+	for _, g in ipairs(order) do
+		entries[#entries + 1] = { head = g, n = #groups[g] }
+		if group_open(g) then
+			for _, s in ipairs(groups[g]) do
+				entries[#entries + 1] = { row = s }
+			end
+		end
+	end
+	local pages = math.max(1, math.ceil(#entries / PAGE_SIZE))
+	local page = math.min(S.page or 0, pages - 1)
+	S.page = page
+	local from = page * PAGE_SIZE + 1
+	local to = math.min(#entries, from + PAGE_SIZE - 1)
+
 	local hidden_count = 0
 	for _ in pairs(S.hidden) do hidden_count = hidden_count + 1 end
 	local status
@@ -336,6 +389,10 @@ local function build_list()
 			status[#status + 1] = ui.span("  ·  " .. hidden_count .. " hidden", "muted")
 		end
 	end
+	if pages > 1 then
+		status[#status + 1] = ui.span("  ·  page " .. tostring(page + 1) .. "/" .. tostring(pages), "muted")
+	end
+
 	local any_open = false
 	for _, g in ipairs(order) do
 		if group_open(g) then
@@ -343,23 +400,40 @@ local function build_list()
 			break
 		end
 	end
-	local kids = { toolbar(any_open), ui.text(status), ui.rule() }
+	local kids = { toolbar(any_open), ui.text(status) }
+	local summary = filter_summary()
+	if summary then kids[#kids + 1] = summary end
+	if pages > 1 then
+		kids[#kids + 1] = ui.node("row", { gap = "sm", align = "center" }, {
+			action_button("arrow-left", "Previous page", "page-prev"),
+			ui.text({ ui.span("Page " .. tostring(page + 1) .. " of " .. tostring(pages), "muted") }),
+			action_button("arrow-right", "Next page", "page-next"),
+		})
+	end
+	kids[#kids + 1] = ui.rule()
+
 	if #items == 0 then
 		kids[#kids + 1] = ui.node("empty", { icon = "search", title = "No sessions", text = "Try another filter or rescan." })
+		return ui.node("col", { gap = "lg" }, kids)
 	end
-	for _, g in ipairs(order) do
-		local block = { group_head(g, #groups[g]) }
-		if group_open(g) then
-			local rows = groups[g]
-			for ri, s in ipairs(rows) do
-				block[#block + 1] = session_row(s)
-				if ri < #rows then
-					block[#block + 1] = ui.rule()
-				end
+
+	local block = {}
+	if entries[from] and entries[from].row then
+		local g = group_of(entries[from].row)
+		block[#block + 1] = group_head(g, #groups[g])
+	end
+	for i = from, to do
+		local e = entries[i]
+		if e.head then
+			block[#block + 1] = group_head(e.head, e.n)
+		else
+			block[#block + 1] = session_row(e.row)
+			if i < to and entries[i + 1] and entries[i + 1].row then
+				block[#block + 1] = ui.rule()
 			end
 		end
-		kids[#kids + 1] = ui.node("col", { gap = "xs" }, block)
 	end
+	kids[#kids + 1] = ui.node("col", { gap = "xs" }, block)
 	return ui.node("col", { gap = "lg" }, kids)
 end
 
@@ -382,8 +456,9 @@ local function build_detail()
 	if cmd then
 		buttons[#buttons + 1] = ui.button("Resume", { size = "sm", variant = "primary", actions = { click = "resume:" .. key_of(s) } })
 		buttons[#buttons + 1] = ui.button("Copy", { size = "sm", variant = "quiet", actions = { click = "copy:" .. key_of(s) } })
-	elseif s.agent == "carly" then
-		buttons[#buttons + 1] = ui.button("Copy path", { size = "sm", variant = "quiet", actions = { click = "copy:" .. key_of(s) } })
+	end
+	if s.path and s.path ~= "" then
+		buttons[#buttons + 1] = ui.button("Copy path", { size = "sm", variant = "quiet", actions = { click = "copypath:" .. key_of(s) } })
 	end
 	buttons[#buttons + 1] = ui.button("Rename", { size = "sm", variant = "quiet", actions = { click = "rename:" .. key_of(s) } })
 	buttons[#buttons + 1] = ui.button("Tags", { size = "sm", variant = "quiet", actions = { click = "tag:" .. key_of(s) } })
@@ -412,11 +487,25 @@ end
 local function render(cx)
 	if not S.pane then return end
 	local v = S.detail and build_detail() or build_list()
-	local ok = pcall(function()
+	local ok, err = pcall(function()
 		cx.canvas:set(S.pane, { view = v })
 	end)
-	if not ok then
+	if ok then
+		S.render_error = nil
+		return
+	end
+	local alive = false
+	pcall(function()
+		alive = cx.canvas:get(S.pane) ~= nil
+	end)
+	if not alive then
 		S.pane = nil
+		return
+	end
+	local message = tostring(err):sub(1, 200)
+	if S.render_error ~= message then
+		S.render_error = message
+		cx:toast("error", "Agent Sessions: could not render", message)
 	end
 end
 
@@ -441,6 +530,8 @@ local function load_tags(cx, then_)
 					for _, k in ipairs(list) do set[k] = true end
 					S.hidden = set
 				end
+			else
+				warn_once(cx3, "tags:sqlite", "error", "Agent Sessions: tags unavailable", (r2.stderr or ""):sub(1, 200))
 			end
 			if then_ then then_(cx3) end
 		end)
@@ -454,11 +545,13 @@ local function load_tags(cx, then_)
 			if ok2 and type(t) == "table" then
 				S.tags = t
 			end
+		else
+			warn_once(cx2, "tags:sqlite", "error", "Agent Sessions: tags unavailable", (r.stderr or ""):sub(1, 200))
 		end
 		done(cx2)
 	end)
 	if not ok then
-		cx:toast("error", "Agent Sessions: node not found", tostring(err):sub(1, 200))
+		warn_once(cx, "node:missing", "error", "Agent Sessions: node not found", tostring(err):sub(1, 200))
 		if then_ then then_(cx) end
 	end
 end
@@ -468,8 +561,18 @@ local function scan(cx)
 	S.scanning = true
 	local ok, err = run_node({ "scan.js" }, 60000, function(r, cx2)
 		S.scanning = false
+		if r.stderr and r.stderr ~= "" then
+			local warning = r.stderr:match("warning:[^\n]*")
+			if warning then
+				warn_once(cx2, "scan:" .. warning, "error", "Agent Sessions", warning:sub(1, 240))
+			end
+		end
 		if r.status ~= 0 then
-			cx2:toast("error", "Session scan failed", (r.stderr or ""):sub(1, 200))
+			if r.timed_out then
+				cx2:toast("error", "Session scan timed out")
+			else
+				cx2:toast("error", "Session scan failed", (r.stderr or ""):sub(1, 200))
+			end
 			return
 		end
 		local ok2, rows = pcall(tern.json.decode, r.stdout)
@@ -479,11 +582,17 @@ local function scan(cx)
 		end
 		table.sort(rows, function(a, b) return (a.time or 0) > (b.time or 0) end)
 		S.rows = rows
+		local live = {}
+		for _, s in ipairs(rows) do live[key_of(s)] = true end
+		for k in pairs(S.selected) do
+			if not live[k] then S.selected[k] = nil end
+		end
+		S.page = 0
 		render(cx2)
 	end)
 	if not ok then
 		S.scanning = false
-		cx:toast("error", "Agent Sessions: node not found", tostring(err):sub(1, 200))
+		warn_once(cx, "node:missing", "error", "Agent Sessions: node not found", tostring(err):sub(1, 200))
 	end
 end
 
@@ -525,6 +634,10 @@ local function open_dashboard(cx)
 end
 
 local function resume(cx, s)
+	if not safe_id(s.id) then
+		cx:toast("error", "This session id can't be resumed safely", tostring(s.id))
+		return
+	end
 	local cmd = resume_cmd(s)
 	if not cmd then
 		cx:toast("error", "No resume command for " .. s.agent)
@@ -534,7 +647,20 @@ local function resume(cx, s)
 	if s.cwd and s.cwd ~= "" then
 		spec.cwd = s.cwd
 	end
-	cx.layout:tab(spec)
+	local tab, err = cx.layout:tab(spec)
+	if not tab then
+		cx:toast("error", "Could not open the resume tab", tostring(err):sub(1, 200))
+	end
+end
+
+local function shell_quote_dir(shell, cwd)
+	local base = ((shell or ""):match("[^\\/]+$") or shell or ""):lower()
+	if base:find("cmd", 1, true) then
+		return 'cd /d "' .. cwd .. '"'
+	elseif base:find("pwsh", 1, true) or base:find("powershell", 1, true) then
+		return "Set-Location -LiteralPath '" .. cwd:gsub("'", "''") .. "'"
+	end
+	return "cd '" .. cwd:gsub("'", "'\\''") .. "'"
 end
 
 local function copy_payload(cx, s)
@@ -547,25 +673,23 @@ local function copy_payload(cx, s)
 		return
 	end
 	local cwd = s.cwd or ""
-	local shell = tostring(cx.settings:get("shell") or ""):lower()
 	local cd = ""
 	if cwd ~= "" then
-		if shell:find("cmd", 1, true) then
-			cd = 'cd /d "' .. cwd .. '"\n'
-		else
-			cd = 'cd "' .. cwd .. '"\n'
-		end
+		local shell = tostring(cx.settings:get("shell") or "")
+		cd = shell_quote_dir(shell, cwd) .. "\n"
 	end
 	cx:copy(cd .. cmd)
 	cx:toast("info", "Copied resume command", cmd)
 end
 
 local function open_detail(cx, s)
+	local key = key_of(s)
 	S.detail = s
 	S.transcript = nil
 	S.loading = true
 	render(cx)
 	local ok, err = run_node({ "transcript.js", "--agent", s.agent, "--path", s.path or "", "--id", s.id }, 30000, function(r, cx2)
+		if not S.detail or key_of(S.detail) ~= key then return end
 		S.loading = false
 		if r.status == 0 and r.stdout ~= "" then
 			S.transcript = r.stdout
@@ -575,6 +699,7 @@ local function open_detail(cx, s)
 		render(cx2)
 	end)
 	if not ok then
+		if not S.detail or key_of(S.detail) ~= key then return end
 		S.loading = false
 		S.transcript = "_node is not available._"
 		render(cx)
@@ -587,15 +712,19 @@ local function rename(cx, s)
 	cx:prompt({ value = t.alias or "", placeholder = "session name" }):next(function(line, err, cx2)
 		if line == nil then return end
 		line = trim(line)
-		local tags = t.tags or {}
-		S.tags[key_of(s)] = { alias = line, tags = tags }
-		local ok, e = run_node({ "tags.js", "set", s.agent, s.id, line, tern.json.encode(tags) }, 10000, function(r, cx3)
+		local key = key_of(s)
+		local old = S.tags[key]
+		local old_copy = old and { alias = old.alias or "", tags = old.tags or {} } or nil
+		S.tags[key] = { alias = line, tags = t.tags or {} }
+		local ok, e = run_node({ "tags.js", "set", s.agent, s.id, line, tern.json.encode(t.tags or {}) }, 10000, function(r, cx3)
 			if r.status ~= 0 then
+				S.tags[key] = old_copy
 				cx3:toast("error", "Could not save name", (r.stderr or ""):sub(1, 200))
 			end
 			render(cx3)
 		end)
 		if not ok then
+			S.tags[key] = old_copy
 			cx2:toast("error", "Could not save name", tostring(e):sub(1, 200))
 		end
 		render(cx2)
@@ -611,14 +740,19 @@ local function edit_tags(cx, s)
 			x = trim(x)
 			if x ~= "" then tags[#tags + 1] = x end
 		end
-		S.tags[key_of(s)] = { alias = t.alias or "", tags = tags }
+		local key = key_of(s)
+		local old = S.tags[key]
+		local old_copy = old and { alias = old.alias or "", tags = old.tags or {} } or nil
+		S.tags[key] = { alias = t.alias or "", tags = tags }
 		local ok, e = run_node({ "tags.js", "set", s.agent, s.id, t.alias or "", tern.json.encode(tags) }, 10000, function(r, cx3)
 			if r.status ~= 0 then
+				S.tags[key] = old_copy
 				cx3:toast("error", "Could not save tags", (r.stderr or ""):sub(1, 200))
 			end
 			render(cx3)
 		end)
 		if not ok then
+			S.tags[key] = old_copy
 			cx2:toast("error", "Could not save tags", tostring(e):sub(1, 200))
 		end
 		render(cx2)
@@ -638,6 +772,7 @@ local function pick_folder(cx)
 	cx:pick({ items = items }):next(function(item, err, cx2)
 		if not item then return end
 		S.filter.folder = (item.detail ~= "" and item.detail) or nil
+		S.page = 0
 		render(cx2)
 	end)
 end
@@ -656,6 +791,7 @@ local function pick_tag(cx)
 	cx:pick({ items = items }):next(function(item, err, cx2)
 		if not item then return end
 		S.filter.tag = (item.detail ~= "" and item.detail) or nil
+		S.page = 0
 		render(cx2)
 	end)
 end
@@ -665,6 +801,7 @@ local function pick_search(cx)
 		if line == nil then return end
 		line = trim(line)
 		S.filter.q = line ~= "" and line or nil
+		S.page = 0
 		render(cx2)
 	end)
 end
@@ -685,36 +822,52 @@ local function remove_row(s)
 end
 
 local function hide_session(cx, s)
-	S.hidden[key_of(s)] = true
-	run_node({ "tags.js", "hide", s.agent, s.id }, 10000, function(r, cx2)
+	local key = key_of(s)
+	local old = S.hidden[key]
+	S.hidden[key] = true
+	local ok, err = run_node({ "tags.js", "hide", s.agent, s.id }, 10000, function(r, cx2)
 		if r.status ~= 0 then
+			S.hidden[key] = old
 			cx2:toast("error", "Could not hide session", (r.stderr or ""):sub(1, 200))
 		end
 		render(cx2)
 	end)
+	if not ok then
+		S.hidden[key] = old
+		cx:toast("error", "Could not hide session", tostring(err):sub(1, 200))
+	end
 	render(cx)
 end
 
 local function restore_session(cx, s)
-	S.hidden[key_of(s)] = nil
-	run_node({ "tags.js", "unhide", s.agent, s.id }, 10000, function(r, cx2)
+	local key = key_of(s)
+	local old = S.hidden[key]
+	S.hidden[key] = nil
+	local ok, err = run_node({ "tags.js", "unhide", s.agent, s.id }, 10000, function(r, cx2)
 		if r.status ~= 0 then
+			S.hidden[key] = old
 			cx2:toast("error", "Could not restore session", (r.stderr or ""):sub(1, 200))
 		end
 		render(cx2)
 	end)
+	if not ok then
+		S.hidden[key] = old
+		cx:toast("error", "Could not restore session", tostring(err):sub(1, 200))
+	end
 	render(cx)
 end
 
 local function delete_one(cx, s, cb)
 	local started, why = run_node({ "delete.js", "--agent", s.agent, "--id", s.id, "--path", s.path or "" }, 30000, function(r, cx3)
-		local ok, errors = false, {}
+		local ok, errors, warnings = false, {}, {}
 		if r.status == 0 then
 			local okj, parsed = pcall(tern.json.decode, r.stdout)
 			if okj and parsed and parsed.ok then
 				ok = true
+				warnings = parsed.warnings or {}
 			elseif okj and parsed and parsed.errors then
 				errors = parsed.errors
+				warnings = parsed.warnings or {}
 			else
 				errors = { (r.stderr or "delete failed"):sub(1, 200) }
 			end
@@ -727,10 +880,12 @@ local function delete_one(cx, s, cb)
 			run_node({ "tags.js", "unhide", s.agent, s.id }, 10000, function() end)
 			render(cx3)
 		end
-		cb(ok, errors, cx3)
+		cb(ok, errors, warnings, cx3)
 	end)
 	if not started then
-		cb(false, { tostring(why) }, cx)
+		tern.timer(0, function(fresh)
+			cb(false, { tostring(why) }, {}, fresh)
+		end)
 	end
 end
 
@@ -740,10 +895,13 @@ local function confirm_delete(cx, s)
 		{ label = "Cancel" },
 	} }):next(function(item, err, cx2)
 		if not item or item.label ~= "Delete permanently" then return end
-		delete_one(cx2, s, function(ok, errors, cx3)
+		delete_one(cx2, s, function(ok, errors, warnings, cx3)
 			local c = cx3 or cx2
 			if ok then
 				c:toast("success", "Session deleted", s.id)
+				if #warnings > 0 then
+					c:toast("info", "Some cleanup failed", table.concat(warnings, "; "):sub(1, 240))
+				end
 			else
 				c:toast("error", "Could not delete session", table.concat(errors, "; "):sub(1, 240))
 			end
@@ -764,15 +922,18 @@ local function delete_selected(cx)
 		{ label = "Cancel" },
 	} }):next(function(item, err, cx2)
 		if not item or item.label:sub(1, 6) ~= "Delete" then return end
-		local deleted, failed, index = 0, {}, 1
+		local deleted, failed, cleanup, index = 0, {}, {}, 1
 		local function step(cx3)
 			while index <= #keys do
 				local s = find_session(keys[index])
 				index = index + 1
 				if s then
-					delete_one(cx3, s, function(ok, errors, cx4)
+					delete_one(cx3, s, function(ok, errors, warnings, cx4)
 						if ok then
 							deleted = deleted + 1
+							for _, w in ipairs(warnings) do
+								cleanup[#cleanup + 1] = s.id .. ": " .. tostring(w)
+							end
 						else
 							failed[#failed + 1] = s.id .. ": " .. table.concat(errors, "; "):sub(1, 120)
 						end
@@ -788,6 +949,9 @@ local function delete_selected(cx)
 				cx3:toast("error", "Deleted " .. deleted .. " of " .. (deleted + #failed) .. " sessions", table.concat(failed, "; "):sub(1, 240))
 			else
 				cx3:toast("success", "Deleted " .. deleted .. (deleted == 1 and " session" or " sessions"))
+			end
+			if #cleanup > 0 then
+				cx3:toast("info", "Some cleanup failed", table.concat(cleanup, "; "):sub(1, 240))
 			end
 		end
 		step(cx2)
@@ -835,6 +999,7 @@ tern.on("canvas_action", function(ev, cx)
 		return true
 	elseif act == "group" then
 		S.group = (S.group == "agent" and "folder") or (S.group == "folder" and "tag") or "agent"
+		S.page = 0
 		render(cx)
 		return true
 	elseif act == "rescan" then
@@ -842,6 +1007,7 @@ tern.on("canvas_action", function(ev, cx)
 		return true
 	elseif act == "toggle-hidden" then
 		S.show_hidden = not S.show_hidden
+		S.page = 0
 		render(cx)
 		return true
 	elseif act == "pick:folder" then
@@ -866,11 +1032,28 @@ tern.on("canvas_action", function(ev, cx)
 				S.collapsed[group_of(s)] = collapse
 			end
 		end
+		S.page = 0
 		render(cx)
 		return true
 	elseif act == "select-mode" then
 		S.selecting = not S.selecting
 		clear_selection()
+		render(cx)
+		return true
+	elseif act == "clear-filters" then
+		S.filter.folder, S.filter.tag, S.filter.q = nil, nil, nil
+		S.page = 0
+		if S.selecting then clear_selection() end
+		render(cx)
+		return true
+	elseif act == "page-prev" then
+		if (S.page or 0) > 0 then
+			S.page = S.page - 1
+			render(cx)
+		end
+		return true
+	elseif act == "page-next" then
+		S.page = (S.page or 0) + 1
 		render(cx)
 		return true
 	elseif act == "select-all" then
@@ -922,6 +1105,12 @@ tern.on("canvas_action", function(ev, cx)
 			return true
 		elseif op == "copy" then
 			copy_payload(cx, s)
+			return true
+		elseif op == "copypath" then
+			if s.path and s.path ~= "" then
+				cx:copy(s.path)
+				cx:toast("info", "Copied transcript path", s.path)
+			end
 			return true
 		elseif op == "rename" then
 			rename(cx, s)

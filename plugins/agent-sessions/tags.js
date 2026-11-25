@@ -1,10 +1,17 @@
 #!/usr/bin/env node
 'use strict';
 const path = require('path');
-const { DatabaseSync } = require('node:sqlite');
+
+let DatabaseSync;
+try { ({ DatabaseSync } = require('node:sqlite')); }
+catch {
+  process.stderr.write('node:sqlite is unavailable; tags and hidden state need Node.js 22.13 or newer.\n');
+  process.exit(1);
+}
 
 const data = process.env.TERN_PLUGIN_DATA || process.cwd();
 const db = new DatabaseSync(path.join(data, 'tags.db'));
+db.exec('pragma busy_timeout = 3000');
 db.exec('create table if not exists tags (agent text not null, id text not null, alias text, tags text, primary key (agent, id))');
 db.exec('create table if not exists hidden (agent text not null, id text not null, primary key (agent, id))');
 
@@ -39,3 +46,4 @@ if (cmd === 'get') {
   process.stderr.write('usage:  tags.js get | set <agent> <id> <alias> <tags-json>');
   process.exit(2);
 }
+db.close();

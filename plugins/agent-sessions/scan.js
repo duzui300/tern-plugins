@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { fileURLToPath } = require('url');
 
 const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
 const out = [];
@@ -11,7 +12,6 @@ function readdir(d) {
   try { return fs.readdirSync(d, { withFileTypes: true }); } catch { return []; }
 }
 function stat(p) { try { return fs.statSync(p); } catch { return null; } }
-function lines(p) { try { return fs.readFileSync(p, 'utf8').split('\n'); } catch { return []; } }
 function headText(p, max) {
   let fd;
   try {
@@ -21,6 +21,27 @@ function headText(p, max) {
     return buf.toString('utf8', 0, n);
   } catch { return ''; }
   finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
+}
+
+function contentText(c, sep) {
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) {
+    return c.filter(x => x && x.type === 'text' && typeof x.text === 'string').map(x => x.text).join(sep || ' ');
+  }
+  if (c && typeof c === 'object' && typeof c.text === 'string') return c.text;
+  return '';
+}
+
+function clean(s) {
+  return String(s || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+}
+function isMetaPrompt(t) {
+  return /^(\/|Set effort level to|Caveat: The messages below were generated|Name this chat from the user's first request|This session is being continued|<command-|<local-command|\[Request interrupted)/i.test(t);
+}
+function titleFrom(text) {
+  const t = clean(text);
+  if (!t || t.startsWith('<') || isMetaPrompt(t)) return '';
+  return t;
 }
 
 function ompMeta(p) {
@@ -38,11 +59,10 @@ function ompMeta(p) {
   }
   if (!title) {
     for (const line of headText(p, 262144).split('\n')) {
+      if (!line) continue;
       let o; try { o = JSON.parse(line); } catch { continue; }
       if (o.type === 'message' && o.message && o.message.role === 'user') {
-        const c = o.message.content;
-        const text = typeof c === 'string' ? c : (Array.isArray(c) ? c.filter(x => x && x.type === 'text').map(x => x.text).join(' ') : '');
-        const t = clean(text);
+        const t = clean(contentText(o.message.content, ' '));
         if (t) { title = t; break; }
       }
     }
@@ -64,9 +84,7 @@ function carlyMeta(p) {
     if (o.type === 'title' && o.title) title = clean(o.title);
     else if (o.type === 'session') { id = o.id || id; cwd = o.cwd || cwd; }
     if (!title && o.type === 'message' && o.message && o.message.role === 'user') {
-      const c = o.message.content;
-      const text = typeof c === 'string' ? c : (Array.isArray(c) ? c.filter(x => x && x.type === 'text').map(x => x.text).join(' ') : '');
-      const t = carlyUserText(text);
+      const t = carlyUserText(contentText(o.message.content, ' '));
       if (t) title = t;
     }
     if (id && cwd && title) break;
@@ -84,38 +102,38 @@ function carlySessionsDir() {
   return '';
 }
 
-function clean(s) {
-  return String(s || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
-}
-function isMetaPrompt(t) {
-  return /^(\/|Set effort level to|Caveat: The messages below were generated|Name this chat from the user's first request|This session is being continued|<command-|<local-command|\[Request interrupted)/i.test(t);
-}
-
-function claudeMeta(p) {
-  let title = '', cwd = '';
-  for (const line of lines(p)) {
+function claudeReadMeta(text) {
+  let title = '', cwd = '', summary = '';
+  for (const line of text.split('\n')) {
     if (!line) continue;
     let o; try { o = JSON.parse(line); } catch { continue; }
     if (!cwd && typeof o.cwd === 'string') cwd = o.cwd;
-    if (!title && o.type === 'user' && !o.isSidechain && o.message && typeof o.message.content === 'string') {
-      const t = clean(o.message.content);
-      if (t && !t.startsWith('<') && !isMetaPrompt(t)) title = t;
+    if (!summary && o.type === 'summary' && typeof o.summary === 'string') summary = clean(o.summary);
+    if (!title && o.type === 'user' && !o.isSidechain && !o.isMeta && o.message) {
+      const t = titleFrom(contentText(o.message.content, ' '));
+      if (t) title = t;
     }
     if (title && cwd) break;
   }
-  return { title, cwd };
+  return { title, cwd, summary };
+}
+
+function claudeMeta(p, size) {
+  let meta = claudeReadMeta(headText(p, 262144));
+  if ((!meta.title || !meta.cwd) && size && size <= 2 * 1024 * 1024) {
+    try { meta = claudeReadMeta(fs.readFileSync(p, 'utf8')); } catch {}
+  }
+  return meta;
 }
 
 function piMeta(p) {
   let id = '', cwd = '', title = '';
-  for (const line of lines(p)) {
+  for (const line of headText(p, 262144).split('\n')) {
     if (!line) continue;
     let o; try { o = JSON.parse(line); } catch { continue; }
     if (o.type === 'session') { id = o.id || id; cwd = o.cwd || cwd; }
     if (!title && o.type === 'message' && o.message && o.message.role === 'user') {
-      const c = o.message.content;
-      const text = typeof c === 'string' ? c : (Array.isArray(c) ? c.filter(x => x && x.type === 'text').map(x => x.text).join(' ') : '');
-      const t = clean(text);
+      const t = clean(contentText(o.message.content, ' '));
       if (t) title = t;
     }
     if (id && cwd && title) break;
@@ -134,11 +152,17 @@ function firstWorkspace(s) {
   try {
     const arr = JSON.parse(s || '[]');
     if (!Array.isArray(arr) || !arr.length) return '';
-    let u = String(arr[0]).replace(/^file:\/\//i, '');
-    u = decodeURIComponent(u);
-    if (/^\/[A-Za-z]:\//.test(u)) u = u.slice(1);
-    u = u.replace(/\//g, '\\');
-    return u ? u[0].toUpperCase() + u.slice(1) : u;
+    let u = String(arr[0]);
+    if (/^file:/i.test(u)) {
+      try { u = fileURLToPath(u); } catch { u = decodeURIComponent(u.replace(/^file:\/\//i, '')); }
+    } else {
+      try { u = decodeURIComponent(u); } catch {}
+    }
+    if (process.platform === 'win32') {
+      u = u.replace(/\//g, '\\');
+      if (/^[a-z]:\\/i.test(u)) u = u[0].toUpperCase() + u.slice(1);
+    }
+    return u;
   } catch { return ''; }
 }
 
@@ -161,7 +185,7 @@ function agyTranscriptFiles(brain) {
 
 function agyFirstUser(brain) {
   for (const f of agyTranscriptFiles(brain)) {
-    for (const line of lines(f)) {
+    for (const line of headText(f, 262144).split('\n')) {
       let o; try { o = JSON.parse(line); } catch { continue; }
       if (o.type === 'USER_INPUT') {
         const t = clean(stripMeta(o.content));
@@ -175,7 +199,7 @@ function agyFirstUser(brain) {
 // conversationId -> workspace, from the CLI prompt history.
 const agyWorkspace = new Map();
 for (const h of [path.join(home, '.gemini', 'antigravity-cli', 'history.jsonl'), path.join(home, '.gemini', 'antigravity', 'history.jsonl')]) {
-  for (const line of lines(h)) {
+  for (const line of headText(h, 1024 * 1024).split('\n')) {
     let o; try { o = JSON.parse(line); } catch { continue; }
     if (o.conversationId && o.workspace && !agyWorkspace.has(o.conversationId)) agyWorkspace.set(o.conversationId, o.workspace);
   }
@@ -190,16 +214,16 @@ for (const proj of readdir(claudeBase)) {
     const p = path.join(dir, f.name);
     const st = stat(p);
     if (!st) continue;
-    const m = claudeMeta(p);
-    if (!m.title) continue;
+    const m = claudeMeta(p, st.size);
+    const title = m.title || m.summary || '';
     out.push({
       agent: 'claude',
       id: f.name.slice(0, -6),
-      title: m.title,
+      title,
       cwd: m.cwd,
       path: p,
       time: st.mtimeMs,
-      preview: m.title,
+      preview: title,
     });
   }
 }
@@ -217,7 +241,7 @@ for (const proj of readdir(piBase)) {
     out.push({
       agent: 'pi',
       id: m.id || f.name.replace(/^.*_/, '').replace(/\.jsonl$/, ''),
-      title: m.title || '(untitled)',
+      title: m.title || '',
       cwd: m.cwd,
       path: p,
       time: st.mtimeMs,
@@ -240,7 +264,7 @@ for (const proj of readdir(ompBase)) {
     out.push({
       agent: 'omp',
       id: m.id,
-      title: m.title || '(untitled)',
+      title: m.title || '',
       cwd: m.cwd,
       path: p,
       time: st.mtimeMs,
@@ -261,7 +285,7 @@ if (carlyBase) {
     out.push({
       agent: 'carly',
       id,
-      title: m.title || '(untitled)',
+      title: m.title || '',
       cwd: m.cwd,
       path: p,
       time: st.mtimeMs,
@@ -271,7 +295,8 @@ if (carlyBase) {
 }
 
 let sqlite = null;
-try { sqlite = require('node:sqlite'); } catch {}
+try { sqlite = require('node:sqlite'); }
+catch { process.stderr.write('warning: node:sqlite is unavailable; Antigravity sessions are skipped. Node.js 22.13 or newer is required.\n'); }
 if (sqlite) {
   const seen = new Map();
   const roots = [
@@ -289,7 +314,7 @@ if (sqlite) {
     try { if (db) db.close(); } catch {}
     for (const r of rows) {
       const id = r.conversation_id;
-      if (!id) continue;
+      if (!id || !/^[A-Za-z0-9._-]+$/.test(id)) continue;
       const brain = path.join(root, 'brain', id);
       const hasTranscript = fs.existsSync(path.join(brain, '.system_generated'));
       const prev = seen.get(id);

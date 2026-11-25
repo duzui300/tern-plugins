@@ -11,10 +11,22 @@ function arg(name, def) {
 
 const agent = arg('agent', '');
 const file = arg('path', '');
+const MAX_MESSAGE_BYTES = 8000;
+const MAX_TOTAL_BYTES = 160000;
 const out = [];
 let role = null;
 let buf = [];
-let total = 0;
+
+function byteLen(text) {
+  return Buffer.byteLength(text, 'utf8');
+}
+function cutUtf8(text, max) {
+  const bytes = Buffer.from(text, 'utf8');
+  if (bytes.length <= max) return text;
+  let end = max;
+  while (end > 0 && (bytes[end] & 0xC0) === 0x80) end--;
+  return bytes.toString('utf8', 0, end);
+}
 
 function flush() {
   if (!buf.length) return;
@@ -24,28 +36,43 @@ function flush() {
 function add(r, text) {
   let t = String(text || '').replace(/\r/g, '').trim();
   if (!t) return;
-  if (t.length > 12000) t = t.slice(0, 12000) + '\n\n… (truncated)';
+  if (byteLen(t) > MAX_MESSAGE_BYTES) t = cutUtf8(t, MAX_MESSAGE_BYTES) + '\n\n… (truncated)';
   if (r !== role) { flush(); role = r; }
   buf.push(t);
-  total += t.length;
+}
+function headText(p, max) {
+  let fd;
+  try {
+    fd = fs.openSync(p, 'r');
+    const b = Buffer.alloc(max);
+    const n = fs.readSync(fd, b, 0, b.length, 0);
+    return b.toString('utf8', 0, n);
+  } catch { return ''; }
+  finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
 }
 function lines(p) { try { return fs.readFileSync(p, 'utf8').split('\n'); } catch { return []; } }
+function contentText(c, sep) {
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) {
+    return c.filter(x => x && x.type === 'text' && typeof x.text === 'string').map(x => x.text).join(sep || '\n\n');
+  }
+  if (c && typeof c === 'object' && typeof c.text === 'string') return c.text;
+  return '';
+}
+function isMetaPrompt(t) {
+  return /^(\/|Set effort level to|Caveat: The messages below were generated|Name this chat from the user's first request|This session is being continued|<command-|<local-command|\[Request interrupted)/i.test(t);
+}
 
 function claude() {
   for (const line of lines(file)) {
     if (!line) continue;
     let o; try { o = JSON.parse(line); } catch { continue; }
-    if (o.isSidechain) continue;
+    if (o.isSidechain || o.isMeta) continue;
     if (o.type === 'user' && o.message) {
-      const c = o.message.content;
-      if (typeof c === 'string') {
-        const s = c.trim();
-        if (s && !s.startsWith('<') && !/^(Caveat: The messages below|Name this chat from the user's first request)/i.test(s)) add('You', s);
-      }
+      const t = contentText(o.message.content, '\n\n').trim();
+      if (t && !t.startsWith('<') && !isMetaPrompt(t)) add('You', t);
     } else if (o.type === 'assistant' && o.message) {
-      const c = o.message.content;
-      const t = typeof c === 'string' ? c : (Array.isArray(c) ? c.filter(x => x && x.type === 'text').map(x => x.text).join('\n\n') : '');
-      add('Assistant', t);
+      add('Assistant', contentText(o.message.content, '\n\n'));
     }
   }
 }
@@ -57,9 +84,7 @@ function pi() {
     if (o.type !== 'message' || !o.message) continue;
     const r = o.message.role;
     if (r !== 'user' && r !== 'assistant') continue;
-    const c = o.message.content;
-    const t = typeof c === 'string' ? c : (Array.isArray(c) ? c.filter(x => x && x.type === 'text').map(x => x.text).join('\n\n') : '');
-    add(r === 'user' ? 'You' : 'Assistant', t);
+    add(r === 'user' ? 'You' : 'Assistant', contentText(o.message.content, '\n\n'));
   }
 }
 
@@ -83,11 +108,11 @@ function agy() {
     } catch { files = []; }
   }
   for (const f of files) {
-    for (const line of lines(f)) {
+    for (const line of headText(f, 8 * 1024 * 1024).split('\n')) {
       if (!line) continue;
       let o; try { o = JSON.parse(line); } catch { continue; }
       if (o.type === 'USER_INPUT') add('You', stripMeta(o.content));
-      else if (o.type === 'PLANNER_RESPONSE') add('Assistant', o.content || '');
+      else if (o.type === 'PLANNER_RESPONSE') add('Assistant', contentText(o.content, '\n\n'));
     }
   }
 }
@@ -103,8 +128,7 @@ function carly() {
     if (o.type !== 'message' || !o.message) continue;
     const r = o.message.role;
     if (r !== 'user' && r !== 'assistant') continue;
-    const c = o.message.content;
-    let t = typeof c === 'string' ? c : (Array.isArray(c) ? c.filter(x => x && x.type === 'text').map(x => x.text).join('\n\n') : '');
+    let t = contentText(o.message.content, '\n\n');
     if (r === 'user') t = carlyContext(t);
     add(r === 'user' ? 'You' : 'Assistant', t);
   }
@@ -118,7 +142,9 @@ try {
   flush();
   if (!out.length) out.push('_No messages found._');
   let text = out.join('\n\n');
-  if (text.length > 400000) text = text.slice(0, 400000) + '\n\n… (transcript truncated)';
+  if (byteLen(text) > MAX_TOTAL_BYTES) {
+    text = cutUtf8(text, MAX_TOTAL_BYTES) + '\n\n… (transcript truncated; use Copy path to read the rest)';
+  }
   process.stdout.write(text);
 } catch (e) {
   process.stderr.write(String((e && e.stack) || e));
